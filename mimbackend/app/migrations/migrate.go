@@ -5,13 +5,20 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"mimbackend/config"
 	models "mimbackend/internal/models/auth"
+	basemodels "mimbackend/internal/models/basemodels"
+	companymodels "mimbackend/internal/models/company"
 	"strings"
 
 	"gorm.io/gorm"
 )
+
+func stringPtr(s string) *string {
+	return &s
+}
 
 type sessionTokenPayload struct {
 	Token string `json:"token"`
@@ -40,6 +47,10 @@ func RunMigrations() {
 		&models.VerificationToken{},
 		&models.OTP{},
 		&models.PasswordResetRequest{},
+		&basemodels.Role{},
+		&companymodels.Company{},
+		&companymodels.Branch{},
+		&companymodels.Department{},
 	); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
@@ -155,6 +166,23 @@ func RunMigrations() {
 	if !migrator.HasIndex(&models.Session{}, "idx_sessions_token_hash") {
 		if err := migrator.CreateIndex(&models.Session{}, "TokenHash"); err != nil {
 			log.Printf("⚠️  Warning: could not create idx_sessions_token_hash index: %v", err)
+		}
+	}
+
+	// Create default "user" role if it doesn't exist
+	var defaultRole basemodels.Role
+	if err := db.Where("name = ?", "user").First(&defaultRole).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			defaultRole = basemodels.Role{
+				Name:        stringPtr("user"),
+				Description: stringPtr("Default user role"),
+				IsActive:    true,
+			}
+			if err := db.Create(&defaultRole).Error; err != nil {
+				log.Printf("⚠️  Warning: could not create default user role: %v", err)
+			} else {
+				log.Println("✅ Created default user role")
+			}
 		}
 	}
 
