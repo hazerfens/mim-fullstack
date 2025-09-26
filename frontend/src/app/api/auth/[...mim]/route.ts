@@ -216,7 +216,14 @@ export async function POST(
         
         if (!refreshToken) {
           console.log("❌ No refresh token found in cookies");
-          return NextResponse.json({ error: "No refresh token" }, { status: 401 });
+          return NextResponse.json(
+            { 
+              success: false, 
+              error: "No refresh token", 
+              code: "NO_REFRESH_TOKEN" 
+            }, 
+            { status: 401 }
+          );
         }
 
         console.log("📤 Calling backend refresh endpoint...");
@@ -231,8 +238,28 @@ export async function POST(
         if (!res.ok) {
           const errorData = await res.json();
           console.log("❌ Backend error:", errorData);
+          
+          // Refresh token geçersiz ise cookie'leri temizle
+          if (res.status === 401) {
+            const response = NextResponse.json(
+              { 
+                success: false, 
+                error: "Invalid refresh token", 
+                code: "INVALID_REFRESH_TOKEN" 
+              }, 
+              { status: 401 }
+            );
+            response.cookies.delete("access_token");
+            response.cookies.delete("refresh_token");
+            return response;
+          }
+          
           return NextResponse.json(
-            { error: errorData.error || "Refresh failed" },
+            { 
+              success: false, 
+              error: errorData.error || "Refresh failed", 
+              code: "REFRESH_FAILED" 
+            }, 
             { status: res.status }
           );
         }
@@ -245,7 +272,12 @@ export async function POST(
           refresh_token_length: data.refresh_token?.length || 0
         });
         
-        const response = NextResponse.json({ success: true });
+        const response = NextResponse.json({ 
+          success: true,
+          message: "Tokens refreshed successfully",
+          has_new_access_token: !!data.access_token,
+          has_new_refresh_token: !!data.refresh_token
+        });
 
         if (data.access_token) {
           console.log("🍪 Setting access_token cookie, length:", data.access_token.length);
@@ -270,9 +302,14 @@ export async function POST(
 
         console.log("✅ Refresh completed successfully");
         return response;
-      } catch {
+      } catch (error) {
+        console.error("❌ Refresh endpoint internal error:", error);
         return NextResponse.json(
-          { error: "Internal server error" },
+          { 
+            success: false, 
+            error: "Internal server error", 
+            code: "INTERNAL_ERROR" 
+          },
           { status: 500 }
         );
       }

@@ -161,83 +161,6 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
   let accessToken = cookieStore.get('access_token')?.value ?? null;
   let refreshToken = cookieStore.get('refresh_token')?.value ?? null;
 
-  const setAccessToken = (token: string) => {
-    cookieStore.set('access_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 60 * 60,
-    });
-    accessToken = token;
-  };
-
-  const setRefreshToken = (token: string) => {
-    cookieStore.set('refresh_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7,
-    });
-    refreshToken = token;
-  };
-
-  const clearTokens = () => {
-    cookieStore.set('access_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 0,
-    });
-    cookieStore.set('refresh_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 0,
-    });
-    accessToken = null;
-    refreshToken = null;
-  };
-
-  const refreshTokens = async (): Promise<boolean> => {
-    if (!refreshToken) {
-      return false;
-    }
-
-    try {
-      const res = await fetch(`${API_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-        cache: 'no-store',
-      });
-
-      if (!res.ok) {
-        clearTokens();
-        return false;
-      }
-
-      const data = await res.json();
-
-      if (data.access_token) {
-        setAccessToken(data.access_token);
-      }
-
-      if (data.refresh_token) {
-        setRefreshToken(data.refresh_token);
-      }
-
-      return true;
-    } catch (error) {
-      console.error('refreshTokens error:', error);
-      clearTokens();
-      return false;
-    }
-  };
-
   const fetchUser = async (): Promise<User | 'unauthorized' | null> => {
     if (!accessToken) {
       return null;
@@ -269,21 +192,69 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
     }
   };
 
+  // Refresh token varsa ve access token yoksa, refresh endpoint'ini çağır
   if (!accessToken && refreshToken) {
-    const refreshed = await refreshTokens();
-    if (!refreshed) {
+    try {
+      console.log('🔄 Refresh token var, access token yok - refresh endpoint çağırılıyor...');
+      const refreshRes = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        if (refreshData.success) {
+          // Refresh başarılı, cookie'leri tekrar oku
+          accessToken = cookieStore.get('access_token')?.value ?? null;
+          refreshToken = cookieStore.get('refresh_token')?.value ?? null;
+          console.log('✅ Refresh başarılı, yeni token alındı');
+        } else {
+          console.log('❌ Refresh başarısız:', refreshData.error);
+          return { status: 'unauthenticated', user: null };
+        }
+      } else {
+        console.log('❌ Refresh endpoint hatası:', refreshRes.status);
+        return { status: 'unauthenticated', user: null };
+      }
+    } catch (error) {
+      console.error('Refresh endpoint çağrısı hatası:', error);
       return { status: 'unauthenticated', user: null };
     }
   }
 
   let user = await fetchUser();
 
-  if (user === 'unauthorized') {
-    const refreshed = await refreshTokens();
-    if (!refreshed) {
+  // Eğer user unauthorized ise ve refresh token varsa tekrar dene
+  if (user === 'unauthorized' && refreshToken) {
+    try {
+      console.log('🔄 User unauthorized, refresh token ile tekrar deneniyor...');
+      const refreshRes = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        if (refreshData.success) {
+          // Refresh başarılı, cookie'leri tekrar oku ve user'ı tekrar fetch et
+          accessToken = cookieStore.get('access_token')?.value ?? null;
+          refreshToken = cookieStore.get('refresh_token')?.value ?? null;
+          user = await fetchUser();
+          console.log('✅ Refresh sonrası user fetch başarılı');
+        } else {
+          console.log('❌ Refresh başarısız:', refreshData.error);
+          return { status: 'unauthenticated', user: null };
+        }
+      } else {
+        console.log('❌ Refresh endpoint hatası:', refreshRes.status);
+        return { status: 'unauthenticated', user: null };
+      }
+    } catch (error) {
+      console.error('Refresh endpoint çağrısı hatası:', error);
       return { status: 'unauthenticated', user: null };
     }
-    user = await fetchUser();
   }
 
   if (user && user !== 'unauthorized') {
