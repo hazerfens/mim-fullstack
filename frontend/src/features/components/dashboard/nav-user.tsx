@@ -1,5 +1,6 @@
-"use client"
+"use client";
 
+import * as React from "react";
 import {
   BadgeCheck,
   Bell,
@@ -7,13 +8,12 @@ import {
   CreditCard,
   LogOut,
   Sparkles,
-} from "lucide-react"
+} from "lucide-react";
+import Image from "next/image";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,24 +22,77 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@/components/ui/dropdown-menu";
 import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
-} from "@/components/ui/sidebar"
+} from "@/components/ui/sidebar";
+import { useSession } from "@/components/providers/session-provider";
+import { logoutAction } from "@/features/actions/auth-action";
 
-export function NavUser({
-  user,
-}: {
-  user: {
-    name: string
-    email: string
-    avatar: string
-  }
-}) {
-  const { isMobile } = useSidebar()
+export function NavUser() {
+  const router = useRouter();
+  const { user, refreshSession } = useSession();
+  const { isMobile } = useSidebar();
+  const [imageError, setImageError] = React.useState(false);
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+  const initials = React.useMemo(() => {
+    if (user?.full_name) {
+      return user.full_name
+        .split(" ")
+        .filter(Boolean)
+        .map((part) => part[0]?.toUpperCase() ?? "")
+        .join("")
+        .slice(0, 2) || "CN";
+    }
+    if (user?.email) {
+      return user.email.slice(0, 2).toUpperCase();
+    }
+    return "CN";
+  }, [user?.full_name, user?.email]);
+  const showImage = Boolean(user?.image_url) && !imageError;
+
+  React.useEffect(() => {
+    setImageError(false);
+  }, [user?.image_url]);
+
+  const handleLogout = React.useCallback(async () => {
+    try {
+      setIsLoggingOut(true);
+      const result = await logoutAction();
+      if (result.status === "success") {
+        toast.success("Çıkış yapıldı");
+        await refreshSession();
+        router.push("/auth/login");
+      } else {
+        toast.error(result.message ?? "Çıkış başarısız");
+      }
+    } catch (error) {
+      console.error("Logout error", error);
+      toast.error("Çıkış sırasında bir hata oluştu");
+    } finally {
+      setIsLoggingOut(false);
+    }
+  }, [refreshSession, router]);
+
+  const AvatarVisual = () => (
+    <Avatar className="h-8 w-8 rounded-lg">
+      {showImage ? (
+        <Image
+          src={user?.image_url as string}
+          alt={user?.full_name || user?.email || "Kullanıcı avatarı"}
+          fill
+          sizes="32px"
+          className="object-cover"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <AvatarFallback className="rounded-lg">{initials}</AvatarFallback>
+      )}
+    </Avatar>
+  );
 
   return (
     <SidebarMenu>
@@ -50,13 +103,11 @@ export function NavUser({
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <Avatar className="h-8 w-8 rounded-lg">
-                <AvatarImage src={user.avatar} alt={user.name} />
-                <AvatarFallback className="rounded-lg">CN</AvatarFallback>
-              </Avatar>
+              <AvatarVisual />
               <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">{user.name}</span>
-                <span className="truncate text-xs">{user.email}</span>
+                <span className="truncate font-medium">{user?.full_name}</span>
+
+                <span className="truncate text-xs">{user?.email}</span>
               </div>
               <ChevronsUpDown className="ml-auto size-4" />
             </SidebarMenuButton>
@@ -69,13 +120,12 @@ export function NavUser({
           >
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <Avatar className="h-8 w-8 rounded-lg">
-                  <AvatarImage src={user.avatar} alt={user.name} />
-                  <AvatarFallback className="rounded-lg">CN</AvatarFallback>
-                </Avatar>
+                <AvatarVisual />
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{user.name}</span>
-                  <span className="truncate text-xs">{user.email}</span>
+                  <span className="truncate font-medium">
+                    {user?.full_name}
+                  </span>
+                  <span className="truncate text-xs">{user?.email}</span>
                 </div>
               </div>
             </DropdownMenuLabel>
@@ -102,7 +152,15 @@ export function NavUser({
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={isLoggingOut}
+              onSelect={(event) => {
+                event.preventDefault();
+                if (!isLoggingOut) {
+                  void handleLogout();
+                }
+              }}
+            >
               <LogOut />
               Log out
             </DropdownMenuItem>
@@ -110,5 +168,5 @@ export function NavUser({
         </DropdownMenu>
       </SidebarMenuItem>
     </SidebarMenu>
-  )
+  );
 }

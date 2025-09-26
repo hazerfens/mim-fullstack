@@ -8,13 +8,13 @@ import {
 import { cookies } from "next/headers";
 import { AppSidebar } from "@/features/components/dashboard/app-sidebar";
 import MyBreadCrumbs from "@/features/components/dashboard/breadcrumbs";
-import { getServerSession } from "@/lib/auth";
+
 // import Image from "next/image";
 
 const DashboardLayout = async ({ children }: { children: React.ReactNode }) => {
   const cookieStore = await cookies();
   const defaultOpen = cookieStore.get("sidebar_state")?.value === "true";
-  const user = await getServerSession();
+  
 
   return (
     <div>
@@ -37,14 +37,7 @@ const DashboardLayout = async ({ children }: { children: React.ReactNode }) => {
           <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
             <div className="min-h-[100vh] flex-1 rounded-xl bg-muted/50 p-4 md:min-h-min">
               {children}
-              <div className="mt-4">
-                <p className="text-sm text-muted-foreground">
-                  Hoş geldin, {user?.email || "-"}!<br />
-                  Rol: {user?.role || "-"}<br />
-                  Email: {user?.email || "-"}<br />
-                  Kullanıcı ID: {user?.sub || "-"}
-                </p>
-              </div>
+              
             </div>
           </div>{" "}
         </SidebarInset>

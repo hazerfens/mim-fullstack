@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
 import { User } from '@/types/user/user';
 
 interface SessionContextType {
@@ -16,18 +16,16 @@ interface SessionProviderProps {
 }
 
 export function SessionProvider({ children, initialUser }: SessionProviderProps) {
-  const [user, setUser] = useState<User | null>(initialUser || null);
-  const [isLoading, setIsLoading] = useState(!initialUser);
+  const [user, setUser] = useState<User | null>(initialUser ?? null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
-
-  // Check session function
-  const checkSession = useCallback(async () => {
+  const refreshSession = useCallback(async (): Promise<void> => {
     try {
       setIsLoading(true);
-      const response = await fetch(`${API_URL}/api/auth/me`, {
+      const response = await fetch('/api/auth/me', {
         method: 'GET',
         credentials: 'include',
+        cache: 'no-store',
       });
 
       if (response.ok) {
@@ -37,25 +35,18 @@ export function SessionProvider({ children, initialUser }: SessionProviderProps)
         setUser(null);
       }
     } catch (error) {
-      console.error('Session check failed:', error);
+      console.error('Session refresh failed:', error);
       setUser(null);
     } finally {
       setIsLoading(false);
     }
-  }, [API_URL]);
+  }, []);
 
-  // Check session on mount if no initial user
   useEffect(() => {
     if (!initialUser) {
-      checkSession();
-    } else {
-      setIsLoading(false);
+      void refreshSession();
     }
-  }, [checkSession, initialUser]);
-
-  const refreshSession = async (): Promise<void> => {
-    await checkSession();
-  };
+  }, [initialUser, refreshSession]);
 
   const value: SessionContextType = {
     user,

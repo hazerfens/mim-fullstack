@@ -1,5 +1,6 @@
 // route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { getCurrentUserAction } from "@/features/actions/auth-action";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3333";
 
@@ -18,23 +19,17 @@ export async function GET(
     case "github":
       return NextResponse.redirect(`${BACKEND_URL}/auth/github`);
     case "me": {
-      try {
-        const accessToken = request.cookies.get("access_token")?.value;
-        if (!accessToken) {
-          return NextResponse.json({ error: "No access token" }, { status: 401 });
-        }
-        const res = await fetch(`${BACKEND_URL}/user/me`, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!res.ok) {
-          return NextResponse.json(await res.json(), { status: res.status });
-        }
-        const data = await res.json();
-        return NextResponse.json(data);
-      } catch {
-        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+      const result = await getCurrentUserAction();
+
+      if (result.status === "success") {
+        return NextResponse.json(result.user);
       }
+
+      if (result.status === "unauthenticated") {
+        return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+      }
+
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
     case "refresh": {
       try {

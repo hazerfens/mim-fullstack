@@ -1,6 +1,6 @@
 import { User } from "@/types/user/user";
 import { cookies } from "next/headers";
-import jwt from "jsonwebtoken";
+import { getCurrentUserAction } from "@/features/actions/auth-action";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
 export async function getUserProfile() {
@@ -81,18 +81,8 @@ export async function getUserProfile() {
 }
 
 export async function getServerSession() {
-  console.log("🔍 getServerSession() called");
-  const cookieStore = await cookies();
-  const accessToken = cookieStore.get("access_token")?.value;
-  console.log("🍪 getServerSession cookies - access_token:", accessToken ? "exists" : "missing");
-  if (!accessToken) return null;
-  try {
-    const decoded = jwt.decode(accessToken);
-    if (!decoded || typeof decoded !== "object") return null;
-    return decoded as User;
-  } catch {
-    return null;
-  }
+  const { status, user } = await getCurrentUserAction();
+  return status === "success" ? (user as User) : null;
 }
 
 // Logout işlemi

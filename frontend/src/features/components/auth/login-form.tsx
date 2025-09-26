@@ -18,6 +18,7 @@ import { FormError } from "./form-error";
 import { FormSuccess } from "./form-success";
 import { loginAction } from "@/features/actions/auth-action";
 import { toast } from "sonner";
+import { useSession } from "@/components/providers/session-provider";
 
 
 export const LoginForm = () => {
@@ -31,6 +32,7 @@ export const LoginForm = () => {
   const [error, setError] = useState<string | undefined>();
   const [success, setSuccess] = useState<string | undefined>();
   const [isPending, setIsPending] = useState(false);
+  const { refreshSession } = useSession();
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(LoginFormSchema),
@@ -58,6 +60,7 @@ export const LoginForm = () => {
         setSuccess("Başarıyla giriş yaptınız! Yönlendiriliyorsunuz...");
         // Context, state'i zaten güncellediği için doğrudan yönlendirme yapabiliriz.
         toast.success("Giriş başarılı!");
+        await refreshSession();
         router.push(callbackUrl);
       } else {
         setError(result.message || "Hatalı giriş");

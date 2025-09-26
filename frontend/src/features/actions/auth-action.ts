@@ -2,8 +2,10 @@
 
 import { cookies } from 'next/headers';
 import { ResetPasswordValues } from '../validators/login-schema';
+import { User } from '@/types/user/user';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333/api/v1';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3333';
 
 // Login aksiyonu
 export async function loginAction(formData: FormData) {
@@ -148,6 +150,149 @@ export async function logoutAction() {
   } catch {
     return { status: 'error', message: 'Çıkış başarısız.', statusCode: 500 };
   }
+}
+
+type GetCurrentUserResult =
+  | { status: 'success'; user: User }
+  | { status: 'unauthenticated' | 'error'; user: null };
+
+export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
+  const cookieStore = await cookies();
+  let accessToken = cookieStore.get('access_token')?.value ?? null;
+  let refreshToken = cookieStore.get('refresh_token')?.value ?? null;
+
+  const setAccessToken = (token: string) => {
+    cookieStore.set('access_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 60 * 60,
+    });
+    accessToken = token;
+  };
+
+  const setRefreshToken = (token: string) => {
+    cookieStore.set('refresh_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7,
+    });
+    refreshToken = token;
+  };
+
+  const clearTokens = () => {
+    cookieStore.set('access_token', '', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 0,
+    });
+    cookieStore.set('refresh_token', '', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 0,
+    });
+    accessToken = null;
+    refreshToken = null;
+  };
+
+  const refreshTokens = async (): Promise<boolean> => {
+    if (!refreshToken) {
+      return false;
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        cache: 'no-store',
+      });
+
+      if (!res.ok) {
+        clearTokens();
+        return false;
+      }
+
+      const data = await res.json();
+
+      if (data.access_token) {
+        setAccessToken(data.access_token);
+      }
+
+      if (data.refresh_token) {
+        setRefreshToken(data.refresh_token);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('refreshTokens error:', error);
+      clearTokens();
+      return false;
+    }
+  };
+
+  const fetchUser = async (): Promise<User | 'unauthorized' | null> => {
+    if (!accessToken) {
+      return null;
+    }
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/user/me`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+      });
+
+      if (res.status === 401) {
+        return 'unauthorized';
+      }
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json();
+      return data as User;
+    } catch (error) {
+      console.error('fetchUser error:', error);
+      return null;
+    }
+  };
+
+  if (!accessToken && refreshToken) {
+    const refreshed = await refreshTokens();
+    if (!refreshed) {
+      return { status: 'unauthenticated', user: null };
+    }
+  }
+
+  let user = await fetchUser();
+
+  if (user === 'unauthorized') {
+    const refreshed = await refreshTokens();
+    if (!refreshed) {
+      return { status: 'unauthenticated', user: null };
+    }
+    user = await fetchUser();
+  }
+
+  if (user && user !== 'unauthorized') {
+    return { status: 'success', user };
+  }
+
+  return accessToken || refreshToken
+    ? { status: 'error', user: null }
+    : { status: 'unauthenticated', user: null };
 }
 
 export const newPassword = async (

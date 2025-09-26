@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import { SessionProvider } from "@/components/providers/session-provider";
-import { getServerSession } from "@/lib/auth";
+import { getCurrentUserAction } from "@/features/actions/auth-action";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -25,8 +25,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Get initial user session on server-side
-  const initialUser = await getServerSession();
+  // Get initial user session on server-side via auth action
+  const { status, user } = await getCurrentUserAction();
+  const initialUser = status === "success" ? user : null;
 
   return (
     <html lang="en" suppressHydrationWarning>
