@@ -11,6 +11,7 @@ import (
 	"mimbackend/app/migrations"
 	"mimbackend/config"
 	"mimbackend/internal/routes"
+	"mimbackend/internal/services"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,18 @@ func StartApp() {
 
 	// DB init
 	config.NewConnection()
+
+	// Initialize Casbin ABAC system
+	err = services.InitCasbin()
+	if err != nil {
+		log.Fatalf("Failed to initialize Casbin ABAC system: %v", err)
+	}
+
+	// Initialize default policies
+	err = services.InitializeDefaultPolicies()
+	if err != nil {
+		log.Printf("Warning: Failed to initialize default policies: %v", err)
+	}
 
 	// Migration çalıştır
 	migrations.RunMigrations()

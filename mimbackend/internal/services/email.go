@@ -79,7 +79,7 @@ func (s *EmailService) SendVerificationEmail(to, userName, verificationCode stri
 	}{
 		UserName:         userName,
 		VerificationCode: verificationCode,
-		VerificationURL:  s.frontendURL + "/verify-email?code=" + verificationCode,
+		VerificationURL:  s.frontendURL + "/auth/email-verify?code=" + verificationCode + "&email=" + to,
 	}
 
 	var buf bytes.Buffer

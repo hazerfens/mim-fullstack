@@ -65,9 +65,18 @@ func JWTMiddleware() gin.HandlerFunc {
 		}
 
 		// Claims'i context'e ekle
-		c.Set("user_id", claims.UserID)
+		c.Set("userID", claims.UserID)  // camelCase for consistency
+		c.Set("user_id", claims.UserID) // snake_case for backward compatibility
 		c.Set("user_email", claims.Email)
 		c.Set("user_role", claims.Role)
+
+		// Sync user role with Casbin
+		err = services.SyncUserRoleWithCasbin(claims.UserID)
+		if err != nil {
+			// Log error but don't fail authentication
+			// This allows the request to continue even if role sync fails
+			c.Set("role_sync_error", err.Error())
+		}
 
 		c.Next()
 	}
@@ -96,7 +105,8 @@ func OptionalJWTMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user_id", claims.UserID)
+		c.Set("userID", claims.UserID)  // camelCase for consistency
+		c.Set("user_id", claims.UserID) // snake_case for backward compatibility
 		c.Set("user_email", claims.Email)
 		c.Set("user_role", claims.Role)
 

@@ -232,8 +232,26 @@ func GoogleCallbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Persist session & account
+	// Create session with security tracking
+	sessionService, err := services.NewSessionService()
+	if err != nil {
+		log.Printf("Failed to create session service: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize session"})
+		return
+	}
+
+	securityInfo := sessionService.ExtractSecurityInfo(c)
+	securityInfo.LoginMethod = "oauth_google"
+
 	refreshExp := time.Now().Add(30 * 24 * time.Hour)
+	_, err = sessionService.CreateSession(user.ID, refreshTok, securityInfo, time.Until(refreshExp))
+	if err != nil {
+		log.Printf("CreateUserSession error (oauth google): %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
+	// Persist session & account (legacy)
 	if err := services.CreateSession(user.ID, refreshTok, refreshExp); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
@@ -248,7 +266,7 @@ func GoogleCallbackHandler(c *gin.Context) {
 		Name:     "access_token",
 		Value:    accessTok,
 		Path:     "/",
-		HttpOnly: false, // Frontend'ten erişilebilir olsun
+		HttpOnly: true,  // Frontend'ten erişilemesin, sadece server-side
 		Secure:   false, // Development için false
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   3600, // 1 saat
@@ -257,7 +275,7 @@ func GoogleCallbackHandler(c *gin.Context) {
 		Name:     "refresh_token",
 		Value:    refreshTok,
 		Path:     "/",
-		HttpOnly: false,
+		HttpOnly: true, // Frontend'ten erişilemesin, sadece server-side
 		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   30 * 24 * 3600, // 30 gün
@@ -369,7 +387,25 @@ func FacebookCallbackHandler(c *gin.Context) {
 		return
 	}
 
+	// Create session with security tracking
+	sessionService, err := services.NewSessionService()
+	if err != nil {
+		log.Printf("Failed to create session service: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize session"})
+		return
+	}
+
+	securityInfo := sessionService.ExtractSecurityInfo(c)
+	securityInfo.LoginMethod = "oauth_facebook"
+
 	refreshExp := time.Now().Add(30 * 24 * time.Hour)
+	_, err = sessionService.CreateSession(user.ID, refreshTok, securityInfo, time.Until(refreshExp))
+	if err != nil {
+		log.Printf("CreateUserSession error (oauth facebook): %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
 	if err := services.CreateSession(user.ID, refreshTok, refreshExp); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
@@ -384,8 +420,8 @@ func FacebookCallbackHandler(c *gin.Context) {
 		Name:     "access_token",
 		Value:    accessTok,
 		Path:     "/",
-		HttpOnly: false,
-		Secure:   false,
+		HttpOnly: true,  // Frontend'ten erişilemesin, sadece server-side
+		Secure:   false, // Development için false
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   3600,
 	})
@@ -393,7 +429,7 @@ func FacebookCallbackHandler(c *gin.Context) {
 		Name:     "refresh_token",
 		Value:    refreshTok,
 		Path:     "/",
-		HttpOnly: false,
+		HttpOnly: true, // Frontend'ten erişilemesin, sadece server-side
 		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   30 * 24 * 3600,
@@ -504,7 +540,25 @@ func GithubCallbackHandler(c *gin.Context) {
 		return
 	}
 
+	// Create session with security tracking
+	sessionService, err := services.NewSessionService()
+	if err != nil {
+		log.Printf("Failed to create session service: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize session"})
+		return
+	}
+
+	securityInfo := sessionService.ExtractSecurityInfo(c)
+	securityInfo.LoginMethod = "oauth_github"
+
 	refreshExp := time.Now().Add(30 * 24 * time.Hour)
+	_, err = sessionService.CreateSession(user.ID, refreshTok, securityInfo, time.Until(refreshExp))
+	if err != nil {
+		log.Printf("CreateUserSession error (oauth github): %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+		return
+	}
+
 	if err := services.CreateSession(user.ID, refreshTok, refreshExp); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 		return
@@ -519,8 +573,8 @@ func GithubCallbackHandler(c *gin.Context) {
 		Name:     "access_token",
 		Value:    accessTok,
 		Path:     "/",
-		HttpOnly: false,
-		Secure:   false,
+		HttpOnly: true,  // Frontend'ten erişilemesin, sadece server-side
+		Secure:   false, // Development için false
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   3600,
 	})
@@ -529,7 +583,7 @@ func GithubCallbackHandler(c *gin.Context) {
 		Name:     "refresh_token",
 		Value:    refreshTok,
 		Path:     "/",
-		HttpOnly: false,
+		HttpOnly: true, // Frontend'ten erişilemesin, sadece server-side
 		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   30 * 24 * 3600,

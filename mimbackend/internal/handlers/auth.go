@@ -1,8 +1,14 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"mimbackend/config"
 	auth "mimbackend/internal/models/auth"
+	basemodels "mimbackend/internal/models/basemodels"
 	"mimbackend/internal/services"
 	"net/http"
 	"os"
@@ -69,9 +75,27 @@ func RegisterHandler(c *gin.Context) {
 	}
 
 	// Kullanıcı oluştur (sadece email ve role)
+	// Find the "user" role from database
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Database connection failed",
+		})
+		return
+	}
+
+	var userRole basemodels.Role
+	if err := db.Where("name = ? AND is_active = ?", "user", true).First(&userRole).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Default user role not found",
+		})
+		return
+	}
+
 	user := &auth.User{
 		Email:    req.Email,
 		FullName: &req.FullName,
+		RoleID:   &userRole.ID,
 		Role:     "user",
 	}
 
@@ -235,6 +259,23 @@ func LoginHandler(c *gin.Context) {
 		fmt.Printf("CreateSession error (login): %v\n", err)
 	}
 
+	// Create user session with security tracking
+	sessionService, err := services.NewSessionService()
+	if err != nil {
+		fmt.Printf("NewSessionService error: %v\n", err)
+	} else {
+		securityInfo := sessionService.ExtractSecurityInfo(c)
+		securityInfo.LoginMethod = "password" // Set login method
+
+		userSession, err := sessionService.CreateSession(user.ID, refreshTok, securityInfo, 30*24*time.Hour)
+		if err != nil {
+			fmt.Printf("CreateUserSession error (login): %v\n", err)
+		} else {
+			fmt.Printf("✅ User session created: %s (IP: %s, Device: %s)\n",
+				userSession.SessionID, userSession.IPAddress, userSession.DeviceType)
+		}
+	}
+
 	// Ensure local account exists (upsert handled by service)
 	if err := services.CreateAccount(user.ID, "local", user.ID.String(), "", refreshTok, refreshExp.Unix()); err != nil {
 		fmt.Printf("CreateAccount error (login): %v\n", err)
@@ -274,13 +315,20 @@ func LoginHandler(c *gin.Context) {
 // @Failure 401 {object} map[string]interface{}
 // @Router /auth/refresh [post]
 func RefreshHandler(c *gin.Context) {
+	// Log raw body for debugging
+	bodyBytes, _ := c.GetRawData()
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Reset body for binding
+	fmt.Printf("RefreshHandler: raw body length=%d content='%s'\n", len(bodyBytes), string(bodyBytes))
+
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fmt.Printf("RefreshHandler: ShouldBindJSON error: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
 		return
 	}
 	// diagnostic log: show incoming refresh token length to help debug issues
 	tokenToUse := req.RefreshToken
+	fmt.Printf("RefreshHandler: Incoming request - token length=%d\n", len(tokenToUse))
 	if tokenToUse == "" {
 		// try cookie fallback
 		cookieVal, cookieErr := c.Cookie("refresh_token")
@@ -291,7 +339,7 @@ func RefreshHandler(c *gin.Context) {
 			fmt.Printf("RefreshHandler: no refresh token provided in request body or cookie\n")
 		}
 	} else {
-		fmt.Printf("RefreshHandler: received refresh token length=%d\n", len(tokenToUse))
+		fmt.Printf("RefreshHandler: received refresh token from body length=%d\n", len(tokenToUse))
 	}
 
 	accessTok, refreshTok, err := services.RefreshTokens(tokenToUse)
@@ -305,6 +353,38 @@ func RefreshHandler(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh_token_invalid_or_expired", "message": "Refresh token expired or invalid. Please login again."})
 		return
 	}
+
+	// Update session activity when token is refreshed
+	sessionService, svcErr := services.NewSessionService()
+	if svcErr == nil {
+		// Get the old session by token
+		oldSession, err := sessionService.GetSessionByToken(tokenToUse)
+		if err == nil && oldSession != nil {
+			// Update activity timestamp
+			if err := sessionService.UpdateSessionActivity(oldSession.SessionID); err != nil {
+				fmt.Printf("UpdateSessionActivity error: %v\n", err)
+			} else {
+				fmt.Printf("✅ Session activity updated: %s\n", oldSession.SessionID)
+			}
+
+			// Create new session with new refresh token
+			securityInfo := sessionService.ExtractSecurityInfo(c)
+			securityInfo.LoginMethod = "refresh"
+
+			newSession, err := sessionService.CreateSession(oldSession.UserID, refreshTok, securityInfo, 30*24*time.Hour)
+			if err != nil {
+				fmt.Printf("CreateSession error (refresh): %v\n", err)
+			} else {
+				fmt.Printf("✅ New session created on refresh: %s\n", newSession.SessionID)
+			}
+
+			// Mark old session as logged out
+			if err := oldSession.MarkAsLogout(sessionService.GetDB()); err != nil {
+				fmt.Printf("MarkAsLogout error: %v\n", err)
+			}
+		}
+	}
+
 	// set refreshed tokens as HttpOnly cookies (safer) and return JSON
 	secure := false
 	if os.Getenv("ENV") == "production" || os.Getenv("NODE_ENV") == "production" {
@@ -333,6 +413,18 @@ func RefreshHandler(c *gin.Context) {
 	// Debug: log new token lengths
 	fmt.Printf("RefreshHandler: SUCCESS - new access_token len=%d, new refresh_token len=%d\n", len(accessTok), len(refreshTok))
 
+	// Log safe summaries (head/tail) for the issued tokens to help correlation
+	if len(accessTok) >= 16 {
+		fmt.Printf("RefreshHandler: new access_token head_tail=%s...%s length=%d\n", accessTok[:8], accessTok[len(accessTok)-8:], len(accessTok))
+	} else {
+		fmt.Printf("RefreshHandler: new access_token (short)=%s length=%d\n", accessTok, len(accessTok))
+	}
+	if len(refreshTok) >= 16 {
+		fmt.Printf("RefreshHandler: new refresh_token head_tail=%s...%s length=%d\n", refreshTok[:8], refreshTok[len(refreshTok)-8:], len(refreshTok))
+	} else {
+		fmt.Printf("RefreshHandler: new refresh_token (short)=%s length=%d\n", refreshTok, len(refreshTok))
+	}
+
 	c.JSON(http.StatusOK, gin.H{"access_token": accessTok, "refresh_token": refreshTok})
 }
 
@@ -354,7 +446,17 @@ func LogoutHandler(c *gin.Context) {
 		return
 	}
 
-	// Session'ı sil
+	// Mark user session as logged out
+	sessionService, err := services.NewSessionService()
+	if err == nil {
+		if err := sessionService.LogoutSession(req.RefreshToken); err != nil {
+			fmt.Printf("LogoutSession error: %v\n", err)
+		} else {
+			fmt.Printf("✅ User session logged out successfully\n")
+		}
+	}
+
+	// Session'ı sil (legacy)
 	if err := services.DeleteSession(req.RefreshToken); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Geçersiz oturum"})
 		return
@@ -390,7 +492,17 @@ func LogoutAllHandler(c *gin.Context) {
 		return
 	}
 
-	// Tüm session'ları sil
+	// Logout all user sessions
+	sessionService, err := services.NewSessionService()
+	if err == nil {
+		if err := sessionService.LogoutAllUserSessions(uid); err != nil {
+			fmt.Printf("LogoutAllUserSessions error: %v\n", err)
+		} else {
+			fmt.Printf("✅ All user sessions logged out successfully\n")
+		}
+	}
+
+	// Tüm session'ları sil (legacy)
 	if err := services.DeleteAllSessionsForUser(uid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout from all devices"})
 		return
@@ -461,7 +573,6 @@ func DebugSessionsHandler(c *gin.Context) {
 		debugSession := map[string]interface{}{
 			"id":                session.ID.String(),
 			"user_id":           session.UserID.String(),
-			"token_hash":        session.TokenHash,
 			"token_data_length": len(session.TokenData),
 			"expires_at":        session.ExpiresAt,
 			"created_at":        session.CreatedAt,
@@ -472,7 +583,7 @@ func DebugSessionsHandler(c *gin.Context) {
 			tokenPayload, parseErr := services.ParseTokenFromJSON(session.TokenData)
 			if parseErr == nil {
 				debugSession["parsed_token_length"] = len(tokenPayload.Token)
-				debugSession["parsed_token_hash"] = services.HashToken(tokenPayload.Token)
+				debugSession["parsed_token_value_head_tail"] = fmt.Sprintf("%s...%s", tokenPayload.Token[:8], tokenPayload.Token[len(tokenPayload.Token)-8:])
 			} else {
 				debugSession["parse_error"] = parseErr.Error()
 			}
@@ -485,4 +596,126 @@ func DebugSessionsHandler(c *gin.Context) {
 		"sessions": debugSessions,
 		"count":    len(debugSessions),
 	})
+}
+
+// CheckTokenHandler accepts { token } and returns a safe summary of the matching session
+// Dev-only helper to correlate an incoming refresh token with DB sessions without
+// returning the full token value.
+func CheckTokenHandler(c *gin.Context) {
+	var body struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	sess, err := services.GetSessionByToken(body.Token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	// parse token head/tail for response
+	tokenPayload, parseErr := services.ParseTokenFromJSON(sess.TokenData)
+	tokenSummary := map[string]interface{}{
+		"id":         sess.ID.String(),
+		"user_id":    sess.UserID.String(),
+		"expires_at": sess.ExpiresAt,
+	}
+	if parseErr == nil && tokenPayload != nil {
+		t := tokenPayload.Token
+		if len(t) >= 16 {
+			tokenSummary["token_head_tail"] = fmt.Sprintf("%s...%s", t[:8], t[len(t)-8:])
+			tokenSummary["token_length"] = len(t)
+		} else {
+			tokenSummary["token_head_tail"] = t
+			tokenSummary["token_length"] = len(t)
+		}
+	}
+
+	c.JSON(http.StatusOK, tokenSummary)
+}
+
+// UserMeHandler returns current user info (used by /user/me and /api/v1/user/me)
+func UserMeHandler(c *gin.Context) {
+	userIDVal, _ := c.Get("user_id")
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	user, err := services.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"id":          user.ID,
+		"email":       user.Email,
+		"full_name":   user.FullName,
+		"role":        user.Role,
+		"image_url":   user.ImageURL,
+		"is_verified": user.IsVerified,
+	})
+}
+
+// GetUserPermissionsHandler kullanıcının izinlerini getirir
+// @Summary Get user permissions
+// @Description Get permissions for a specific user based on their role
+// @Tags users
+// @Accept json
+// @Produce json
+// @Param userId path string true "User ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /api/v1/users/{userId}/permissions [get]
+func GetUserPermissionsHandler(c *gin.Context) {
+	userIDStr := c.Param("userId")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	// Get database connection
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	// Get user with role
+	var user auth.User
+	if err := db.Preload("RoleModel").Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Return role permissions
+	if user.RoleModel != nil {
+		// Parse permissions JSON string
+		var permissions basemodels.Permissions
+		if user.RoleModel.Permissions != nil && *user.RoleModel.Permissions != "" {
+			if err := json.Unmarshal([]byte(*user.RoleModel.Permissions), &permissions); err != nil {
+				log.Printf("❌ Error parsing permissions for user %s: %v", userID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse permissions"})
+				return
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"permissions": permissions,
+			"role_name":   user.RoleModel.Name,
+		})
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"permissions": basemodels.Permissions{},
+			"role_name":   "No role assigned",
+		})
+	}
 }

@@ -5,16 +5,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
-	"mimbackend/config"
-	auth "mimbackend/internal/models/auth"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+
+	"mimbackend/config"
+	auth "mimbackend/internal/models/auth"
+	basemodels "mimbackend/internal/models/basemodels"
 )
 
 var jwtSecret = []byte("your-secret-key-change-this-in-production")
@@ -28,6 +30,14 @@ type Claims struct {
 
 type sessionTokenPayload struct {
 	Token string `json:"token"`
+}
+
+func hashRefreshToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // HashPassword şifreyi hashler
@@ -98,20 +108,24 @@ func ValidateJWT(tokenString string) (*Claims, error) {
 	})
 
 	if err != nil {
+		log.Printf("ValidateJWT: Parse error: %v", err)
 		return nil, err
 	}
 
 	if !token.Valid {
+		log.Printf("ValidateJWT: Token invalid")
 		return nil, errors.New("invalid token")
 	}
 
 	// Parse Subject as UserID
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
+		log.Printf("ValidateJWT: Invalid subject: %s", claims.Subject)
 		return nil, errors.New("invalid subject in token")
 	}
 	claims.UserID = userID
 
+	log.Printf("ValidateJWT: SUCCESS - userID=%s email=%s role=%s", userID, claims.Email, claims.Role)
 	return claims, nil
 }
 
@@ -126,6 +140,11 @@ func CreateUser(user *auth.User) error {
 	var existingUser auth.User
 	if err := db.Where("email = ?", user.Email).First(&existingUser).Error; err == nil {
 		return errors.New("user already exists")
+	}
+
+	// Role senkronizasyonu
+	if err := syncUserRole(db, user); err != nil {
+		return err
 	}
 
 	// Kullanıcıyı oluştur
@@ -144,29 +163,74 @@ func CreateSession(userID uuid.UUID, token string, expiresAt time.Time) error {
 	}
 
 	// compute SHA256 hash for token and store both raw token and hash
-	h := sha256.Sum256([]byte(token))
-	hashHex := hex.EncodeToString(h[:])
+	payload := sessionTokenPayload{Token: token}
+	tokenJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	tokenHash := hashRefreshToken(token)
+
+	session := &auth.Session{
+		UserID:    userID,
+		TokenData: tokenJSON,
+		TokenHash: tokenHash,
+		ExpiresAt: expiresAt,
+	}
+
+	if err := db.Create(session).Error; err != nil {
+		log.Printf("CreateSession failed: %v, userID: %s, token length: %d", err, userID, len(token))
+		return err
+	}
+
+	// Log token head/tail for debugging (do NOT log full token)
+	head := ""
+	tail := ""
+	if len(token) >= 16 {
+		head = token[:8]
+		tail = token[len(token)-8:]
+	} else {
+		head = token
+		tail = token
+	}
+	log.Printf("CreateSession: saved session userID=%s token_len=%d token_head_tail=%s...%s expiresAt=%s hash_prefix=%s", userID, len(token), head, tail, expiresAt.String(), tokenHash[:8])
+
+	return nil
+}
+
+// UpdateSessionToken rotates refresh token within an existing session row
+func UpdateSessionToken(sessionID uuid.UUID, token string, expiresAt time.Time) error {
+	db, err := config.NewConnection()
+	if err != nil {
+		return err
+	}
 
 	payload := sessionTokenPayload{Token: token}
 	tokenJSON, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+	tokenHash := hashRefreshToken(token)
 
-	session := &auth.Session{
-		UserID:    userID,
-		TokenData: tokenJSON,
-		TokenHash: hashHex,
-		ExpiresAt: expiresAt,
+	updates := map[string]interface{}{
+		"token_data": tokenJSON,
+		"token_hash": tokenHash,
+		"expires_at": expiresAt,
 	}
 
-	if err := db.Create(session).Error; err != nil {
-		log.Printf("CreateSession failed: %v, userID: %s, token length: %d, token_sha256=%s", err, userID, len(token), hashHex)
-		return err
+	id := sessionID.String()
+	result := db.Model(&auth.Session{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("session not found")
 	}
 
-	log.Printf("CreateSession: saved session userID=%s token_len=%d token_sha256=%s expiresAt=%s", userID, len(token), hashHex, expiresAt.String())
-
+	hashPreview := ""
+	if tokenHash != "" && len(tokenHash) >= 8 {
+		hashPreview = tokenHash[:8]
+	}
+	log.Printf("UpdateSessionToken: session_id=%s expiresAt=%s hash_prefix=%s", id, expiresAt.String(), hashPreview)
 	return nil
 }
 
@@ -213,34 +277,21 @@ func GetSessionByToken(token string) (*auth.Session, error) {
 		return nil, err
 	}
 
-	// look up by token hash for performance and to avoid indexing very long tokens
-	h := sha256.Sum256([]byte(token))
-	hashHex := hex.EncodeToString(h[:])
-
 	var sess auth.Session
-	if err := db.Where("token_hash = ?", hashHex).First(&sess).Error; err != nil {
-		log.Printf("GetSessionByToken: token hash lookup failed len=%d token_sha256=%s err=%v", len(token), hashHex, err)
-
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Compatibility fallback: look up by JSON token value
-			if errFallback := db.Where("JSON_EXTRACT(token_data, '$.token') = ?", token).First(&sess).Error; errFallback == nil {
-				log.Printf("GetSessionByToken: fallback JSON lookup succeeded for session id=%d userID=%s", sess.ID, sess.UserID)
-
-				if strings.TrimSpace(sess.TokenHash) == "" {
-					_ = db.Model(&auth.Session{}).Where("id = ?", sess.ID).Update("token_hash", hashHex).Error
-				}
-
-				return &sess, nil
-			}
-		}
-
-		return nil, err
+	// Primary lookup via token hash (matches current sessions table structure)
+	hash := hashRefreshToken(token)
+	hashPreview := hash
+	if len(hashPreview) > 16 {
+		hashPreview = hashPreview[:16]
 	}
-
-	// backfill token_hash if somehow missing
-	if strings.TrimSpace(sess.TokenHash) == "" {
-		if err := db.Model(&auth.Session{}).Where("id = ?", sess.ID).Update("token_hash", hashHex).Error; err != nil {
-			log.Printf("GetSessionByToken: failed to backfill token_hash for session id=%d: %v", sess.ID, err)
+	log.Printf("GetSessionByToken: attempting lookup len=%d hash_prefix=%s", len(token), hashPreview)
+	queryErr := db.Where("token_hash = ?", hash).First(&sess).Error
+	if queryErr != nil {
+		// Fallback to JSON lookup for legacy rows where hash may be missing
+		if err := db.Where("JSON_UNQUOTE(JSON_EXTRACT(token_data, '$.token')) = ?", token).First(&sess).Error; err != nil {
+			log.Printf("GetSessionByToken: lookup failed len=%d hash_err=%v json_err=%v", len(token), queryErr, err)
+			logRecentSessions(db, 5)
+			return nil, err
 		}
 	}
 
@@ -251,9 +302,64 @@ func GetSessionByToken(token string) (*auth.Session, error) {
 		}
 	}
 
-	log.Printf("GetSessionByToken: found session id=%d userID=%s token_present=%t token_sha256=%s", sess.ID, sess.UserID, payload.Token != "", hashHex)
+	// compute hash only for debug (not stored in DB)
+	resultHashPreview := ""
+	if hash != "" && len(hash) >= 8 {
+		resultHashPreview = hash[:8]
+	}
+	log.Printf("GetSessionByToken: found session id=%d userID=%s token_present=%t hash_prefix=%s", sess.ID, sess.UserID, payload.Token != "", resultHashPreview)
 
 	return &sess, nil
+}
+
+func logRecentSessions(db *gorm.DB, limit int) {
+	var sessions []auth.Session
+	if err := db.Order("id DESC").Limit(limit).Find(&sessions).Error; err != nil {
+		log.Printf("logRecentSessions: error listing sessions: %v", err)
+		return
+	}
+
+	log.Printf("logRecentSessions: showing last %d sessions", len(sessions))
+	for _, sess := range sessions {
+		tokenDataPreview := ""
+		if len(sess.TokenData) > 0 {
+			var tokenPayload map[string]any
+			if err := json.Unmarshal(sess.TokenData, &tokenPayload); err != nil {
+				tokenDataPreview = fmt.Sprintf("invalid json len=%d", len(sess.TokenData))
+			} else if token, ok := tokenPayload["token"].(string); ok {
+				head := token
+				tail := token
+				if len(token) > 16 {
+					head = token[:8]
+					tail = token[len(token)-8:]
+				}
+				if len(token) > 16 {
+					tokenDataPreview = fmt.Sprintf("token:%s...%s", head, tail)
+				} else {
+					tokenDataPreview = fmt.Sprintf("token:%s", token)
+				}
+			} else {
+				tokenDataPreview = "token missing"
+			}
+		} else {
+			tokenDataPreview = "no token_data"
+		}
+
+		hashPreview := sess.TokenHash
+		if len(hashPreview) > 18 {
+			hashPreview = fmt.Sprintf("%s...", hashPreview[:18])
+		}
+
+		log.Printf(
+			"logRecentSessions: id=%d user=%s hash=%s %s expires=%s updated=%s",
+			sess.ID,
+			sess.UserID,
+			hashPreview,
+			tokenDataPreview,
+			sess.ExpiresAt.Format(time.RFC3339),
+			sess.UpdatedAt.Format(time.RFC3339),
+		)
+	}
 }
 
 // DeleteSession removes a session by token (the DB stores refresh tokens in `token` column)
@@ -262,22 +368,16 @@ func DeleteSession(refreshToken string) error {
 	if err != nil {
 		return err
 	}
-
-	hash := sha256.Sum256([]byte(refreshToken))
-	hashHex := hex.EncodeToString(hash[:])
-
-	result := db.Where("token_hash = ?", hashHex).Delete(&auth.Session{})
+	// Delete by matching the hashed token (current schema) and fallback to JSON for older rows
+	hash := hashRefreshToken(refreshToken)
+	result := db.Where("token_hash = ?", hash).Delete(&auth.Session{})
 	if result.Error != nil {
 		return result.Error
 	}
-
 	if result.RowsAffected == 0 {
-		result = db.Where("JSON_EXTRACT(token_data, '$.token') = ?", refreshToken).Delete(&auth.Session{})
+		result = db.Where("JSON_UNQUOTE(JSON_EXTRACT(token_data, '$.token')) = ?", refreshToken).Delete(&auth.Session{})
 		if result.Error != nil {
 			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return errors.New("session bulunamadı")
 		}
 	}
 
@@ -302,6 +402,13 @@ func DeleteAllSessionsForUser(userID uuid.UUID) error {
 // RefreshTokens accepts a refresh token, validates it against stored sessions,
 // rotates the refresh token and returns new access + refresh tokens.
 func RefreshTokens(refreshToken string) (newAccess string, newRefresh string, err error) {
+	// Debug: log incoming token head/tail
+	if len(refreshToken) >= 16 {
+		log.Printf("RefreshTokens: incoming token head_tail=%s...%s", refreshToken[:8], refreshToken[len(refreshToken)-8:])
+	} else {
+		log.Printf("RefreshTokens: incoming token (short)=%s", refreshToken)
+	}
+
 	// Validate token structure and claims
 	claims, err := ValidateJWT(refreshToken)
 	if err != nil {
@@ -315,6 +422,18 @@ func RefreshTokens(refreshToken string) (newAccess string, newRefresh string, er
 	if err != nil {
 		log.Printf("RefreshTokens: GetSessionByToken error for token len=%d: %v", len(refreshToken), err)
 		return "", "", err
+	}
+
+	// Debug: log the token parsed from session token_data for correlation
+	if len(sess.TokenData) > 0 {
+		if parsed, pErr := ParseTokenFromJSON(sess.TokenData); pErr == nil {
+			t := parsed.Token
+			if len(t) >= 16 {
+				log.Printf("RefreshTokens: matched session token head_tail=%s...%s", t[:8], t[len(t)-8:])
+			} else {
+				log.Printf("RefreshTokens: matched session token (short)=%s", t)
+			}
+		}
 	}
 
 	// Check expiry
@@ -336,39 +455,23 @@ func RefreshTokens(refreshToken string) (newAccess string, newRefresh string, er
 		return "", "", err
 	}
 
-	// Create new session and delete old one
-	// Retry CreateSession a few times in case of rare duplicate token collisions
+	// Rotate token in the existing session row to avoid orphaned records
 	refreshExp := time.Now().Add(30 * 24 * time.Hour)
-	maxAttempts := 3
-	var createErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		createErr = CreateSession(user.ID, refreshTok, refreshExp)
-		if createErr == nil {
-			break
+	updateErr := UpdateSessionToken(sess.ID, refreshTok, refreshExp)
+	if updateErr != nil {
+		log.Printf("RefreshTokens: UpdateSessionToken failed, falling back to new session creation: %v", updateErr)
+		if createErr := CreateSession(user.ID, refreshTok, refreshExp); createErr != nil {
+			return "", "", createErr
 		}
-
-		// If error indicates duplicate token, regenerate tokens and retry
-		if strings.Contains(strings.ToLower(createErr.Error()), "duplicate entry") || strings.Contains(createErr.Error(), "1062") {
-			log.Printf("CreateSession duplicate token detected (attempt %d/%d). Regenerating token...", attempt, maxAttempts)
-			// regenerate tokens
-			accessTok, refreshTok, err = GenerateTokens(user.ID, user.Email, user.Role)
-			if err != nil {
-				return "", "", err
-			}
-			// update refreshExp for the new token
-			refreshExp = time.Now().Add(30 * 24 * time.Hour)
-			continue
+		if delErr := DeleteSession(refreshToken); delErr != nil {
+			log.Printf("RefreshTokens: DeleteSession fallback error: %v", delErr)
 		}
-
-		// For other errors, stop retrying
-		break
-	}
-	if createErr != nil {
-		return "", "", createErr
 	}
 
-	if err := DeleteSession(refreshToken); err != nil {
-		// log but continue
+	if postSess, postErr := GetSessionByToken(refreshTok); postErr != nil {
+		log.Printf("RefreshTokens: post-rotation lookup failed len=%d err=%v", len(refreshTok), postErr)
+	} else {
+		log.Printf("RefreshTokens: post-rotation session id=%s expires=%s", postSess.ID, postSess.ExpiresAt.String())
 	}
 
 	return accessTok, refreshTok, nil
@@ -397,11 +500,36 @@ func GetUserByID(id uuid.UUID) (*auth.User, error) {
 	}
 
 	var user auth.User
-	if err := db.Where("id = ?", id).First(&user).Error; err != nil {
+	if err := db.Preload("RoleModel").Where("id = ?", id).First(&user).Error; err != nil {
 		return nil, err
 	}
 
+	// Role senkronizasyonu
+	if err := syncUserRole(db, &user); err != nil {
+		log.Printf("Warning: failed to sync user role: %v", err)
+	}
+
 	return &user, nil
+}
+
+// UpdateUser kullanıcı bilgilerini günceller
+func UpdateUser(user *auth.User) error {
+	db, err := config.NewConnection()
+	if err != nil {
+		return err
+	}
+
+	// Role senkronizasyonu
+	if err := syncUserRole(db, user); err != nil {
+		return err
+	}
+
+	// Kullanıcıyı güncelle
+	if err := db.Save(user).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // UpdateUserVerifiedStatus updates user's verified status
@@ -445,8 +573,29 @@ func ParseTokenFromJSON(tokenData []byte) (*sessionTokenPayload, error) {
 	return &payload, nil
 }
 
-// HashToken generates SHA256 hash of token
-func HashToken(token string) string {
-	hash := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(hash[:])
+// syncUserRole senkronize eder User.Role field'ini Role tablosundan
+func syncUserRole(db *gorm.DB, user *auth.User) error {
+	if user.RoleID == nil {
+		// RoleID yoksa default "user" rolü ata
+		var defaultRole basemodels.Role
+		if err := db.Where("name = ?", "user").First(&defaultRole).Error; err != nil {
+			return errors.New("default user role not found")
+		}
+		user.RoleID = &defaultRole.ID
+		user.Role = "user"
+		return nil
+	}
+
+	// RoleID varsa, Role tablosundan name'i al
+	var role basemodels.Role
+	if err := db.Where("id = ?", user.RoleID).First(&role).Error; err != nil {
+		return errors.New("role not found")
+	}
+
+	if role.Name == nil {
+		return errors.New("role name is nil")
+	}
+
+	user.Role = *role.Name
+	return nil
 }

@@ -18,9 +18,12 @@ type User struct {
 	PasswordHash string
 	IsVerified   bool `gorm:"default:false"`
 
-	// Role relationship
+	// Role relationship (global role)
 	RoleID *uuid.UUID `gorm:"column:role_id;type:varchar(36);index"`
 	Role   string     `gorm:"column:role;type:varchar(50);default:'user'"`
+
+	// Active company for multi-tenancy
+	ActiveCompanyID *uuid.UUID `gorm:"column:active_company_id;type:varchar(36);index"`
 
 	// Password reset fields
 	ResetToken        *string

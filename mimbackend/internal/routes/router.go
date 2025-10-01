@@ -52,6 +52,17 @@ func NewRouter() *gin.Engine {
 			"is_verified": user.IsVerified,
 		})
 	})
+
+	// User session management endpoints
+	userGroup := r.Group("/user")
+	userGroup.Use(middleware.JWTMiddleware())
+	{
+		userGroup.GET("/sessions", handlers.GetUserSessionsHandler)
+		userGroup.GET("/sessions/history", handlers.GetUserSessionHistoryHandler)
+		userGroup.GET("/sessions/stats", handlers.GetUserSessionStatsHandler)
+		userGroup.DELETE("/sessions/:session_id", handlers.RevokeUserSessionHandler)
+	}
+
 	// Swagger docs
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	// Keep the short alias `/swg` for backward compatibility and redirects
@@ -73,6 +84,7 @@ func NewRouter() *gin.Engine {
 		authRoutes.SetupAuthRoutes(apiGroup)
 		authRoutes.SetupOAuthRoutes(apiGroup)
 		authRoutes.SetupAPIRoutes(apiGroup)
+		authRoutes.SetupCompanyRoutes(apiGroup)
 	}
 
 	// Debug endpoint

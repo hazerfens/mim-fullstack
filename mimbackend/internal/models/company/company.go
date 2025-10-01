@@ -1,15 +1,38 @@
 package company
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 
 	authmodels "mimbackend/internal/models/auth"
 )
 
+// Time alias for time.Time
+type Time = time.Time
+
+// CompanyModules - SaaS için company altında aktif modeller
+type CompanyModules struct {
+	Branches    bool `json:"branches"`
+	Departments bool `json:"departments"`
+	Employees   bool `json:"employees"`
+	Projects    bool `json:"projects"`
+	Invoices    bool `json:"invoices"`
+	Reports     bool `json:"reports"`
+	Settings    bool `json:"settings"`
+}
+
 type Company struct {
 	BaseModel
 
+	// DEPRECATED: UserID kept for backward compatibility but should use CompanyMembers
 	UserID *uuid.UUID `gorm:"column:user_id;type:varchar(36);index"`
+
+	// SaaS Fields
+	Slug        *string `gorm:"column:slug;type:varchar(100);uniqueIndex;not null"`
+	IsActive    bool    `gorm:"column:is_active;default:true"`
+	PlanType    *string `gorm:"column:plan_type;type:varchar(50);default:'free'"` // free, basic, premium, enterprise
+	PlanExpires *Time   `gorm:"column:plan_expires"`
 
 	Title         *string       `gorm:"column:unvani;type:varchar(255);uniqueIndex"`
 	Name          *string       `gorm:"column:adi;type:varchar(255)"`
@@ -31,8 +54,14 @@ type Company struct {
 	WorkingHours  *WorkingHours `gorm:"column:workinghours;type:json"`
 	Publish       bool          `gorm:"column:publish;default:true"`
 
-	Branches    []Branch     `gorm:"foreignKey:CompanyID"`
-	Departments []Department `gorm:"foreignKey:CompanyID"`
+	// Company Modules - SaaS için aktif modeller
+	Modules *CompanyModules `gorm:"column:modules;type:json"`
 
+	// Relations
+	Branches    []Branch        `gorm:"foreignKey:CompanyID"`
+	Departments []Department    `gorm:"foreignKey:CompanyID"`
+	Members     []CompanyMember `gorm:"foreignKey:CompanyID"` // Many-to-many through CompanyMember
+
+	// Backward compatibility
 	User *authmodels.User `gorm:"foreignKey:UserID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 }
