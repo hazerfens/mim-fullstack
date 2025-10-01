@@ -5,7 +5,7 @@ import { getServerSession } from '@/lib/auth';
 const Dashboard = async () => {
   const user = await getServerSession();
 
-  console.log("user in dashboard page:", user);
+  
   
   return (
     <div>

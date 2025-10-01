@@ -4,14 +4,21 @@ import { useSession } from "@/components/providers/session-provider";
 import { Button } from "@/components/ui/button";
 import { logoutAction } from "@/features/actions/auth-action";
 import { useRouter } from "next/navigation";
+import { clearClientSession } from "@/lib/session-helpers";
 
 export function UserStatus() {
   const { user, isLoading, refreshSession } = useSession();
   const router = useRouter();
 
   const handleLogout = async () => {
-    await logoutAction();
-    router.push("/");
+    try {
+      await logoutAction();
+      clearClientSession(); // Zustand store'u temizle
+      router.push('/');
+      router.refresh();
+    } catch (error) {
+      console.error("Logout error", error);
+    }
   };
 
   const handleRefresh = async () => {

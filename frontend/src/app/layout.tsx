@@ -25,8 +25,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Get initial user session on server-side via auth action
+  // Get user session for all routes
   const { status, user } = await getCurrentUserAction();
+  
   const initialUser = status === "success" ? user : null;
 
   return (

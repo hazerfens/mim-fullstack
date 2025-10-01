@@ -4,8 +4,37 @@ import { cookies } from 'next/headers';
 import { ResetPasswordValues } from '../validators/login-schema';
 import { User } from '@/types/user/user';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3333/api/v1';
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3333';
+const BACKEND_ORIGIN =
+  process.env.BACKEND_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  'http://localhost:3333';
+
+const BACKEND_API_BASE =
+  process.env.BACKEND_API_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_API_URL ||
+  `${BACKEND_ORIGIN}/api/v1`;
+
+
+const trimTrailingSlash = (value: string) => value.replace(/\/$/, '');
+
+const backendAuthUrl = `${trimTrailingSlash(BACKEND_ORIGIN)}/auth`;
+const backendApiAuthUrl = `${trimTrailingSlash(BACKEND_API_BASE)}/auth`;
+
+// Token helper functions (Server Actions)
+export async function getAccessToken(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get('access_token')?.value ?? null;
+}
+
+export async function getRefreshToken(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get('refresh_token')?.value ?? null;
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
 
 // Login aksiyonu
 export async function loginAction(formData: FormData) {
@@ -15,7 +44,7 @@ export async function loginAction(formData: FormData) {
   };
 
   try {
-    const res = await fetch(`${API_URL}/auth/login`, {
+    const res = await fetch(`${backendAuthUrl}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentials),
@@ -27,29 +56,9 @@ export async function loginAction(formData: FormData) {
     }
 
     const data = await res.json();
-    const { access_token, refresh_token } = data;
+    const { access_token } = data;
 
-    // Çerezleri kaydet
-    const cookieStore = await cookies();
-    if (access_token) {
-      cookieStore.set('access_token', access_token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        path: '/',
-        maxAge: 60 * 60, // 60 dakika (JWT_EXPIRES_IN)
-      });
-    }
-    if (refresh_token) {
-      cookieStore.set('refresh_token', refresh_token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        path: '/',
-        maxAge: 60 * 60 * 24 * 7, // 7 gün (JWT_REFRESH_EXPIRES_IN)
-      });
-    }
-
+    // Çerezler route.ts'de ayarlanacak
     // Kullanıcı bilgisi access_token'dan decode edilip dönülüyor
     let user = null;
     try {
@@ -67,7 +76,7 @@ export async function resetAction(formData: FormData) {
   };
   
   try {
-    const res = await fetch(`${API_URL}/auth/reset-password`, {
+    const res = await fetch(`${backendApiAuthUrl}/reset-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentials),
@@ -96,7 +105,7 @@ export async function registerAction(formData: FormData) {
   console.log(userData);
   
   try {
-    const res = await fetch(`${API_URL}/auth/register`, {
+    const res = await fetch(`${backendAuthUrl}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData),
@@ -119,8 +128,8 @@ export async function registerAction(formData: FormData) {
 // Sosyal OAuth aksiyonu
 export async function socialAuthAction(provider: string, callbackURL: string = '/dashboard') {
   try {
-    // Doğru backend endpointi için API_URL kullanılıyor
-    const url = `${API_URL}/auth/${provider}?callbackUrl=${encodeURIComponent(callbackURL)}`;
+    // Doğru backend endpointi için backendAuthUrl kullanılıyor
+    const url = `${backendAuthUrl}/${provider}?callbackUrl=${encodeURIComponent(callbackURL)}`;
     window.location.href = url;
     return { status: 'success' };
   } catch {
@@ -128,27 +137,33 @@ export async function socialAuthAction(provider: string, callbackURL: string = '
   }
 }
 
-// Logout aksiyonu
+// Logout aksiyonu - backend'e logout isteği gönderir ve cookie'leri siler
 export async function logoutAction() {
+  const cookieStore = await cookies();
+  const refreshToken = cookieStore.get('refresh_token')?.value;
+
   try {
-    const cookieStore = await cookies();
-    cookieStore.set('access_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 0,
-    });
-    cookieStore.set('refresh_token', '', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 0,
-    });
+    // Backend'e logout isteği gönder
+    if (refreshToken) {
+      await fetch(`${backendApiAuthUrl}/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        cache: 'no-store',
+      });
+    }
+
+    // Cookie'leri sil
+    cookieStore.delete('access_token');
+    cookieStore.delete('refresh_token');
+
     return { status: 'success', message: 'Çıkış başarılı.' };
-  } catch {
-    return { status: 'error', message: 'Çıkış başarısız.', statusCode: 500 };
+  } catch (error) {
+    console.error('Logout error:', error);
+    // Hata olsa bile cookie'leri sil
+    cookieStore.delete('access_token');
+    cookieStore.delete('refresh_token');
+    return { status: 'error', message: 'Çıkış sırasında bir hata oluştu.', statusCode: 500 };
   }
 }
 
@@ -158,8 +173,7 @@ type GetCurrentUserResult =
 
 export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
   const cookieStore = await cookies();
-  let accessToken = cookieStore.get('access_token')?.value ?? null;
-  let refreshToken = cookieStore.get('refresh_token')?.value ?? null;
+  const accessToken = cookieStore.get('access_token')?.value ?? null;
 
   const fetchUser = async (): Promise<User | 'unauthorized' | null> => {
     if (!accessToken) {
@@ -167,7 +181,7 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
     }
 
     try {
-      const res = await fetch(`${BACKEND_URL}/user/me`, {
+      const res = await fetch(`${BACKEND_ORIGIN}/user/me`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -192,78 +206,13 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
     }
   };
 
-  // Refresh token varsa ve access token yoksa, refresh endpoint'ini çağır
-  if (!accessToken && refreshToken) {
-    try {
-      console.log('🔄 Refresh token var, access token yok - refresh endpoint çağırılıyor...');
-      const refreshRes = await fetch('/api/auth/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-      });
-
-      if (refreshRes.ok) {
-        const refreshData = await refreshRes.json();
-        if (refreshData.success) {
-          // Refresh başarılı, cookie'leri tekrar oku
-          accessToken = cookieStore.get('access_token')?.value ?? null;
-          refreshToken = cookieStore.get('refresh_token')?.value ?? null;
-          console.log('✅ Refresh başarılı, yeni token alındı');
-        } else {
-          console.log('❌ Refresh başarısız:', refreshData.error);
-          return { status: 'unauthenticated', user: null };
-        }
-      } else {
-        console.log('❌ Refresh endpoint hatası:', refreshRes.status);
-        return { status: 'unauthenticated', user: null };
-      }
-    } catch (error) {
-      console.error('Refresh endpoint çağrısı hatası:', error);
-      return { status: 'unauthenticated', user: null };
-    }
-  }
-
-  let user = await fetchUser();
-
-  // Eğer user unauthorized ise ve refresh token varsa tekrar dene
-  if (user === 'unauthorized' && refreshToken) {
-    try {
-      console.log('🔄 User unauthorized, refresh token ile tekrar deneniyor...');
-      const refreshRes = await fetch('/api/auth/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-      });
-
-      if (refreshRes.ok) {
-        const refreshData = await refreshRes.json();
-        if (refreshData.success) {
-          // Refresh başarılı, cookie'leri tekrar oku ve user'ı tekrar fetch et
-          accessToken = cookieStore.get('access_token')?.value ?? null;
-          refreshToken = cookieStore.get('refresh_token')?.value ?? null;
-          user = await fetchUser();
-          console.log('✅ Refresh sonrası user fetch başarılı');
-        } else {
-          console.log('❌ Refresh başarısız:', refreshData.error);
-          return { status: 'unauthenticated', user: null };
-        }
-      } else {
-        console.log('❌ Refresh endpoint hatası:', refreshRes.status);
-        return { status: 'unauthenticated', user: null };
-      }
-    } catch (error) {
-      console.error('Refresh endpoint çağrısı hatası:', error);
-      return { status: 'unauthenticated', user: null };
-    }
-  }
+  const user = await fetchUser();
 
   if (user && user !== 'unauthorized') {
     return { status: 'success', user };
   }
 
-  return accessToken || refreshToken
-    ? { status: 'error', user: null }
-    : { status: 'unauthenticated', user: null };
+  return accessToken ? { status: 'error', user: null } : { status: 'unauthenticated', user: null };
 }
 
 export const newPassword = async (
@@ -276,7 +225,7 @@ export const newPassword = async (
   }
 
   try {
-    const res = await fetch(`${API_URL}/auth/reset-password`, {
+    const res = await fetch(`${backendApiAuthUrl}/reset-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, password: values.password }),

@@ -1,8 +1,16 @@
 // route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUserAction } from "@/features/actions/auth-action";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3333";
+const BACKEND_ORIGIN =
+  process.env.BACKEND_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  "http://localhost:3333";
+
+const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
+
+const backendAuthUrl = `${trimTrailingSlash(BACKEND_ORIGIN)}/api/v1/auth`;
+console.log("🔧 Backend Auth URL:", process.env.NEXT_PUBLIC_BACKEND_API_URL);
+
 
 export async function GET(
   request: NextRequest,
@@ -13,23 +21,43 @@ export async function GET(
 
   switch (action) {
     case "google":
-      return NextResponse.redirect(`${BACKEND_URL}/auth/google`);
+      return NextResponse.redirect(`${backendAuthUrl}/google`);
     case "facebook":
-      return NextResponse.redirect(`${BACKEND_URL}/auth/facebook`);
+      return NextResponse.redirect(`${backendAuthUrl}/facebook`);
     case "github":
-      return NextResponse.redirect(`${BACKEND_URL}/auth/github`);
+      return NextResponse.redirect(`${backendAuthUrl}/github`);
     case "me": {
-      const result = await getCurrentUserAction();
+      try {
+        const accessToken = request.cookies.get("access_token")?.value;
 
-      if (result.status === "success") {
-        return NextResponse.json(result.user);
+        if (!accessToken) {
+          return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+        }
+
+        // Direkt backend'e proxy yap, gereksiz server action çağrısı yapma
+        const res = await fetch(`${BACKEND_ORIGIN}/user/me`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+          },
+          cache: "no-store",
+        });
+
+        if (res.status === 401) {
+          return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+        }
+
+        if (!res.ok) {
+          return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+        }
+
+        const userData = await res.json();
+        return NextResponse.json(userData);
+      } catch (error) {
+        console.error("Me endpoint error:", error);
+        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
       }
-
-      if (result.status === "unauthenticated") {
-        return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
-      }
-
-      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
     case "refresh": {
       try {
@@ -42,8 +70,8 @@ export async function GET(
           return NextResponse.redirect(new URL("/auth/login", request.url));
         }
 
-        console.log("📤 Calling backend refresh endpoint...");
-        const res = await fetch(`${BACKEND_URL}/auth/refresh`, {
+    console.log("📤 Calling backend refresh endpoint...", backendAuthUrl);
+    const res = await fetch(`${backendAuthUrl}/refresh`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh_token: refreshToken }),
@@ -106,6 +134,7 @@ export async function POST(
 ) {
   const mim = (await params)?.mim ?? [];
   const action = mim[0];
+ 
 
   switch (action) {
     case "login": {
@@ -113,7 +142,7 @@ export async function POST(
         const body = await request.json();
         const { email, password } = body;
 
-        const res = await fetch(`${BACKEND_URL}/auth/login`, {
+    const res = await fetch(`${backendAuthUrl}/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
@@ -163,7 +192,7 @@ export async function POST(
         const body = await request.json();
         const { email, password, full_name } = body;
 
-        const res = await fetch(`${BACKEND_URL}/auth/register`, {
+    const res = await fetch(`${backendAuthUrl}/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password, full_name }),
@@ -211,8 +240,12 @@ export async function POST(
     case "refresh": {
       try {
         console.log("🔄 Refresh endpoint called");
-        const refreshToken = request.cookies.get("refresh_token")?.value;
-        console.log("🔑 Refresh token from cookie:", refreshToken ? `${refreshToken.substring(0, 20)}...` : "None");
+        const body = await request.json().catch(() => ({}));
+        const refreshToken = body?.refresh_token || request.cookies.get("refresh_token")?.value;
+        console.log(
+          "🔑 Refresh token from body/cookie:",
+          refreshToken ? `${refreshToken.substring(0, 20)}...` : "None"
+        );
         
         if (!refreshToken) {
           console.log("❌ No refresh token found in cookies");
@@ -226,8 +259,8 @@ export async function POST(
           );
         }
 
-        console.log("📤 Calling backend refresh endpoint...");
-        const res = await fetch(`${BACKEND_URL}/auth/refresh`, {
+    console.log("📤 Calling backend refresh endpoint...");
+    const res = await fetch(`${backendAuthUrl}/refresh`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh_token: refreshToken }),
@@ -239,16 +272,9 @@ export async function POST(
           const errorData = await res.json();
           console.log("❌ Backend error:", errorData);
           
-          // Refresh token geçersiz ise cookie'leri temizle
+          // Refresh token geçersiz ise cookie'leri temizle ve login'e yönlendir
           if (res.status === 401) {
-            const response = NextResponse.json(
-              { 
-                success: false, 
-                error: "Invalid refresh token", 
-                code: "INVALID_REFRESH_TOKEN" 
-              }, 
-              { status: 401 }
-            );
+            const response = NextResponse.redirect(new URL("/auth/login", request.url));
             response.cookies.delete("access_token");
             response.cookies.delete("refresh_token");
             return response;
@@ -274,9 +300,7 @@ export async function POST(
         
         const response = NextResponse.json({ 
           success: true,
-          message: "Tokens refreshed successfully",
-          has_new_access_token: !!data.access_token,
-          has_new_refresh_token: !!data.refresh_token
+          message: "Tokens refreshed successfully"
         });
 
         if (data.access_token) {
@@ -317,14 +341,14 @@ export async function POST(
 
     case "logout": {
       try {
-        const accessToken = request.cookies.get("access_token")?.value;
+        const body = await request.json().catch(() => ({}));
+        const refreshToken = body?.refresh_token || request.cookies.get("refresh_token")?.value;
 
-        // Optionally call backend logout
-        if (accessToken) {
-          await fetch(`${BACKEND_URL}/auth/logout`, {
+        if (refreshToken) {
+          await fetch(`${backendAuthUrl}/logout`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ access_token: accessToken }),
+            body: JSON.stringify({ refresh_token: refreshToken }),
           });
         }
 
@@ -348,7 +372,7 @@ export async function POST(
           return NextResponse.json({ error: "No access token" }, { status: 401 });
         }
 
-        const res = await fetch(`${BACKEND_URL}/auth/logout-all`, {
+    const res = await fetch(`${backendAuthUrl}/logout-all`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -414,4 +438,3 @@ export async function POST(
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   }
 }
-

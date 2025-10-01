@@ -10,7 +10,6 @@ import {
   Sparkles,
 } from "lucide-react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -31,11 +30,13 @@ import {
 } from "@/components/ui/sidebar";
 import { useSession } from "@/components/providers/session-provider";
 import { logoutAction } from "@/features/actions/auth-action";
+import { useRouter } from "next/navigation";
+import { clearClientSession } from "@/lib/session-helpers";
 
 export function NavUser() {
-  const router = useRouter();
-  const { user, refreshSession } = useSession();
+  const { user } = useSession();
   const { isMobile } = useSidebar();
+  const router = useRouter();
   const [imageError, setImageError] = React.useState(false);
   const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   const initials = React.useMemo(() => {
@@ -61,21 +62,17 @@ export function NavUser() {
   const handleLogout = React.useCallback(async () => {
     try {
       setIsLoggingOut(true);
-      const result = await logoutAction();
-      if (result.status === "success") {
-        toast.success("Çıkış yapıldı");
-        await refreshSession();
-        router.push("/auth/login");
-      } else {
-        toast.error(result.message ?? "Çıkış başarısız");
-      }
+      await logoutAction();
+      clearClientSession(); // Zustand store'u temizle
+      toast.success("Çıkış yapıldı");
+      router.push('/');
+      router.refresh();
     } catch (error) {
       console.error("Logout error", error);
       toast.error("Çıkış sırasında bir hata oluştu");
-    } finally {
       setIsLoggingOut(false);
     }
-  }, [refreshSession, router]);
+  }, [router]);
 
   const AvatarVisual = () => (
     <Avatar className="h-8 w-8 rounded-lg">

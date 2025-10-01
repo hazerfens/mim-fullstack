@@ -1,11 +1,15 @@
 "use client";
-import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
+import React, { createContext, useContext, ReactNode, useEffect, useCallback, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import { User } from '@/types/user/user';
+import { useSessionStore } from '@/stores/session-store';
 
 interface SessionContextType {
   user: User | null;
   isLoading: boolean;
+  error: string | null;
   refreshSession: () => Promise<void>;
+  clearSession: () => void;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -13,45 +17,54 @@ const SessionContext = createContext<SessionContextType | undefined>(undefined);
 interface SessionProviderProps {
   children: ReactNode;
   initialUser?: User | null;
+  disabled?: boolean;
 }
 
-export function SessionProvider({ children, initialUser }: SessionProviderProps) {
-  const [user, setUser] = useState<User | null>(initialUser ?? null);
-  const [isLoading, setIsLoading] = useState(false);
+export function SessionProvider({ children, initialUser, disabled = false }: SessionProviderProps) {
+  const pathname = usePathname();
+  const initRef = useRef(false);
 
+  // Zustand store'dan state ve actions
+  const user = useSessionStore((state) => state.user);
+  const isLoading = useSessionStore((state) => state.isLoading);
+  const error = useSessionStore((state) => state.error);
+  const fetchUser = useSessionStore((state) => state.fetchUser);
+  const setUser = useSessionStore((state) => state.setUser);
+  const clearSession = useSessionStore((state) => state.clearSession);
+  const shouldRefetch = useSessionStore((state) => state.shouldRefetch);
+
+  // Check if current route is public (no session needed)
+  const isPublicRoute = pathname?.startsWith('/auth/') || pathname === '/';
+
+  // Refresh session fonksiyonu - force refresh yapmak için
   const refreshSession = useCallback(async (): Promise<void> => {
-    try {
-      setIsLoading(true);
-      const response = await fetch('/api/auth/me', {
-        method: 'GET',
-        credentials: 'include',
-        cache: 'no-store',
-      });
-
-      if (response.ok) {
-        const userData = await response.json();
-        setUser(userData);
-      } else {
-        setUser(null);
-      }
-    } catch (error) {
-      console.error('Session refresh failed:', error);
-      setUser(null);
-    } finally {
-      setIsLoading(false);
+    if (disabled || isPublicRoute) {
+      return;
     }
-  }, []);
+    await fetchUser();
+  }, [disabled, isPublicRoute, fetchUser]);
 
+  // Initial user varsa store'a set et
   useEffect(() => {
-    if (!initialUser) {
-      void refreshSession();
+    if (initialUser && !user && !initRef.current) {
+      setUser(initialUser);
+      initRef.current = true;
     }
-  }, [initialUser, refreshSession]);
+  }, [initialUser, user, setUser]);
+
+  // İlk yüklemede veya refetch gerektiğinde user fetch et
+  useEffect(() => {
+    if (!disabled && !isPublicRoute && shouldRefetch()) {
+      void fetchUser();
+    }
+  }, [disabled, isPublicRoute, shouldRefetch, fetchUser]);
 
   const value: SessionContextType = {
     user,
     isLoading,
+    error,
     refreshSession,
+    clearSession,
   };
 
   return (

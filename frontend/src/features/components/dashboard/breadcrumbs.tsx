@@ -81,6 +81,8 @@ const MyBreadCrumbs = () => {
     stockmovements: 'Stok Hareketleri',
     inventory: 'Stok',
     materialinventory: "Malzemeler",
+    settings: "Ayarlar",
+    roles: "Roller",
     'material-inventory': "Malzemeler",
     'molds': "Yarı Mamüller",
     'price': "Fiyatlandırmalar",
