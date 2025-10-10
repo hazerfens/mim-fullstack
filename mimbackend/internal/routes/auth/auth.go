@@ -24,25 +24,15 @@ func SetupAuthRoutes(router gin.IRouter) {
 		auth.POST("/reset-password", handlers.ResetPasswordHandler)
 	}
 
-	// ABAC Admin routes - require system admin permissions
-	admin := router.Group("/admin")
-	admin.Use(middleware.JWTMiddleware(), middleware.SystemABACMiddleware("admin", "access"))
-	{
-		admin.POST("/policies", handlers.AddPolicyHandler)
-		admin.DELETE("/policies", handlers.RemovePolicyHandler)
-		admin.POST("/roles", handlers.AddRoleForUserHandler)
-		admin.DELETE("/roles", handlers.DeleteRoleForUserHandler)
-		admin.GET("/roles", handlers.GetRolesForUserHandler)
-		admin.GET("/users", handlers.GetUsersForRoleHandler)
-		admin.GET("/policies", handlers.GetAllPoliciesHandler)
-		admin.POST("/check-permission", handlers.CheckPermissionHandler)
-	}
+	// Casbin admin endpoints removed: policy management is no longer exposed.
 
 	// Role management routes - require admin permissions
 	roleGroup := router.Group("/roles")
 	roleGroup.Use(middleware.JWTMiddleware(), middleware.AdminMiddleware())
 	{
 		roleGroup.GET("", handlers.GetRoles)
+		// System roles endpoint - only super_admin allowed
+		roleGroup.GET("/system", middleware.RoleBasedMiddleware("super_admin"), handlers.GetSystemRoles)
 		roleGroup.GET("/:id", handlers.GetRole)
 		roleGroup.POST("", handlers.CreateRole)
 		roleGroup.PUT("/:id", handlers.UpdateRole)
@@ -50,5 +40,19 @@ func SetupAuthRoutes(router gin.IRouter) {
 		roleGroup.POST("/assign", handlers.AssignRoleToUser)
 		roleGroup.POST("/:userId/assign-role", handlers.AssignRoleToUser)
 		roleGroup.DELETE("/assign/:userId/:roleId", handlers.RemoveRoleFromUser)
+	}
+
+	// Permission catalog routes - admin-managed; check endpoint available to authenticated users
+	permGroup := router.Group("/permissions")
+	permGroup.Use(middleware.JWTMiddleware())
+	{
+		// management routes require admin
+		permGroup.GET("", middleware.AdminMiddleware(), handlers.ListPermissions)
+		permGroup.POST("", middleware.AdminMiddleware(), handlers.CreatePermission)
+		permGroup.PUT(":name", middleware.AdminMiddleware(), handlers.UpdatePermission)
+		permGroup.DELETE(":name", middleware.AdminMiddleware(), handlers.DeletePermission)
+
+		// check permission for current user (or other user if admin)
+		permGroup.GET(":name/check", handlers.CheckPermissionByNameHandler)
 	}
 }

@@ -120,3 +120,43 @@ func (s *EmailService) SendPasswordResetEmail(to string, userName *string, reset
 
 	return s.sendEmail(to, subject, buf.String())
 }
+
+// SendInvitationEmail sends company invitation email to the invited user
+func (s *EmailService) SendInvitationEmail(to, companyName, inviterName, inviterEmail, roleName, token, expiresAt, companyEmail, companyPhone, companyWebsite string) error {
+	subject := companyName + " - Şirket Daveti"
+
+	// load template from filesystem
+	tmpl, err := template.ParseFiles("templates/company_invitation.html")
+	if err != nil {
+		return fmt.Errorf("failed to load invitation email template: %w", err)
+	}
+
+	data := struct {
+		CompanyName    string
+		InviterName    string
+		InviterEmail   string
+		RoleName       string
+		AcceptURL      string
+		ExpiresAt      string
+		CompanyEmail   string
+		CompanyPhone   string
+		CompanyWebsite string
+	}{
+		CompanyName:    companyName,
+		InviterName:    inviterName,
+		InviterEmail:   inviterEmail,
+		RoleName:       roleName,
+		AcceptURL:      s.frontendURL + "/accept-invitation/" + token,
+		ExpiresAt:      expiresAt,
+		CompanyEmail:   companyEmail,
+		CompanyPhone:   companyPhone,
+		CompanyWebsite: companyWebsite,
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("failed to render invitation email template: %w", err)
+	}
+
+	return s.sendEmail(to, subject, buf.String())
+}

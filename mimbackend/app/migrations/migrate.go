@@ -10,14 +10,18 @@ import (
 	models "mimbackend/internal/models/auth"
 	basemodels "mimbackend/internal/models/basemodels"
 	companymodels "mimbackend/internal/models/company"
+	"mimbackend/internal/services"
 	"strings"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 func stringPtr(s string) *string {
 	return &s
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 type sessionTokenPayload struct {
 	Token string `json:"token"`
@@ -50,11 +54,22 @@ func RunMigrations() {
 		&models.UserPermission{}, // User-specific permissions
 		&basemodels.Role{},
 		&companymodels.Company{},
-		&companymodels.CompanyMember{}, // Multi-tenancy: User-Company relationship
+		&companymodels.CompanyMember{},     // Multi-tenancy: User-Company relationship
+		&companymodels.CompanyInvitation{}, // Company invitations
 		&companymodels.Branch{},
 		&companymodels.Department{},
 	); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Migrate role_permissions table (new normalized permissions)
+	if err := migrator.AutoMigrate(&basemodels.RolePermission{}); err != nil {
+		log.Fatalf("Failed to migrate role_permissions: %v", err)
+	}
+
+	// Permission catalog for model-agnostic permission names
+	if err := migrator.AutoMigrate(&basemodels.Permission{}); err != nil {
+		log.Fatalf("Failed to migrate permissions catalog: %v", err)
 	}
 
 	// Ensure token_data and token_hash columns exist (AutoMigrate should add them, but double-check).
@@ -132,11 +147,76 @@ func RunMigrations() {
 	// Create default roles if they don't exist
 	createDefaultRoles(db)
 
+	// Backfill role_permissions from any existing Role.Permissions JSON
+	backfillRolePermissions(db)
+
+	// Create company_owner role
+	if err := CreateCompanyOwnerRole(db); err != nil {
+		log.Printf("⚠️  Warning: could not create company_owner role: %v", err)
+	}
+
 	// Create default admin user if no users exist
 	createDefaultAdminUser(db)
 
+	// Legacy address column migration removed — these columns are no longer dropped automatically.
+
 	log.Println("✅ Migrations applied successfully")
 }
+
+// createDefaultRoles ensures common system roles exist (non-destructive)
+func createDefaultRoles(db *gorm.DB) {
+	// Define sensible default permissions for seeded roles
+	adminPerms := basemodels.Permissions{
+		Users:       &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
+		Companies:   &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
+		Branches:    &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
+		Departments: &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
+		Roles:       &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
+		Reports:     &basemodels.PermissionDetail{Read: boolPtr(true)},
+		Settings:    &basemodels.PermissionDetail{Read: boolPtr(true), Update: boolPtr(true)},
+	}
+	userPerms := basemodels.Permissions{
+		Users:     &basemodels.PermissionDetail{Read: boolPtr(true)},
+		Companies: &basemodels.PermissionDetail{Read: boolPtr(true)},
+		Reports:   &basemodels.PermissionDetail{Read: boolPtr(true)},
+	}
+
+	defaults := []struct {
+		Role  basemodels.Role
+		Perms *basemodels.Permissions
+	}{
+		{Role: basemodels.Role{Name: stringPtr("super_admin"), Description: stringPtr("Super administrator"), IsActive: true}, Perms: nil},
+		{Role: basemodels.Role{Name: stringPtr("admin"), Description: stringPtr("System administrator"), IsActive: true}, Perms: &adminPerms},
+		{Role: basemodels.Role{Name: stringPtr("user"), Description: stringPtr("Default user role"), IsActive: true}, Perms: &userPerms},
+		{Role: basemodels.Role{Name: stringPtr("company_owner"), Description: stringPtr("Company owner (alias)"), IsActive: true}, Perms: nil},
+		{Role: basemodels.Role{Name: stringPtr("customer"), Description: stringPtr("Customer role (limited)"), IsActive: true}, Perms: nil},
+	}
+
+	for _, d := range defaults {
+		var existing basemodels.Role
+		if err := db.Where("name = ?", d.Role.Name).First(&existing).Error; err != nil {
+			// create role and optionally seed permissions
+			roleToCreate := d.Role
+			if d.Perms != nil {
+				if raw, jErr := json.Marshal(d.Perms); jErr == nil {
+					dr := datatypes.JSON(raw)
+					roleToCreate.Permissions = &dr
+				}
+			}
+			if err := db.Create(&roleToCreate).Error; err != nil {
+				log.Printf("warning: could not create default role %v: %v", d.Role.Name, err)
+				continue
+			}
+			if d.Perms != nil {
+				if err := services.UpsertRolePermissionsFromPermissions(roleToCreate.ID, d.Perms); err != nil {
+					log.Printf("warning: could not upsert role_permissions for seeded role %v: %v", *d.Role.Name, err)
+				}
+			}
+		}
+	}
+}
+
+// Company owner migration exists in a dedicated migration file.
 
 func createDefaultAdminUser(db *gorm.DB) {
 	// Check if any users exist
@@ -180,4 +260,79 @@ func createDefaultAdminUser(db *gorm.DB) {
 	}
 
 	log.Printf("✅ Created default admin user: %s (password: %s)", adminUser.Email, defaultPassword)
+}
+
+// backfillRolePermissions migrates existing role.Permissions JSON blobs into the
+// normalized role_permissions table. This operation is idempotent: it will skip
+// running if role_permissions already contains rows.
+func backfillRolePermissions(db *gorm.DB) {
+	var cnt int64
+	if err := db.Model(&basemodels.RolePermission{}).Count(&cnt).Error; err != nil {
+		log.Printf("⚠️  Could not count role_permissions table: %v", err)
+		return
+	}
+	if cnt > 0 {
+		log.Println("ℹ️  role_permissions already populated; skipping backfill")
+		return
+	}
+
+	var roles []basemodels.Role
+	if err := db.Find(&roles).Error; err != nil {
+		log.Printf("⚠️  Could not load roles for backfill: %v", err)
+		return
+	}
+
+	for _, r := range roles {
+		if r.Permissions == nil || len(*r.Permissions) == 0 {
+			continue
+		}
+		var perms basemodels.Permissions
+		if err := json.Unmarshal(*r.Permissions, &perms); err != nil {
+			log.Printf("⚠️  Could not parse permissions JSON for role %s: %v", r.ID.String(), err)
+			continue
+		}
+
+		var rows []basemodels.RolePermission
+
+		addFromDetail := func(resource string, d *basemodels.PermissionDetail) {
+			if d == nil {
+				return
+			}
+			if d.Create != nil && *d.Create {
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "create", "allow", nil, 0))
+			}
+			if d.Read != nil && *d.Read {
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "read", "allow", nil, 0))
+			}
+			if d.Update != nil && *d.Update {
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "update", "allow", nil, 0))
+			}
+			if d.Delete != nil && *d.Delete {
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "delete", "allow", nil, 0))
+			}
+		}
+
+		addFromDetail("users", perms.Users)
+		addFromDetail("companies", perms.Companies)
+		addFromDetail("branches", perms.Branches)
+		addFromDetail("departments", perms.Departments)
+		addFromDetail("roles", perms.Roles)
+		addFromDetail("reports", perms.Reports)
+		addFromDetail("settings", perms.Settings)
+
+		for k, v := range perms.Custom {
+			addFromDetail(k, v)
+		}
+
+		if len(rows) == 0 {
+			continue
+		}
+
+		if err := db.Create(&rows).Error; err != nil {
+			log.Printf("⚠️  Could not insert backfilled role_permissions for role %s: %v", r.ID.String(), err)
+			// continue; don't abort the whole migration
+		} else {
+			log.Printf("✅ Backfilled %d role_permissions rows for role %s", len(rows), r.ID.String())
+		}
+	}
 }

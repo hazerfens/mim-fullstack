@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +40,8 @@ func CreateCompanyHandler(c *gin.Context) {
 	}
 
 	var req struct {
-		Title        *string     `json:"title"`
+		Unvani       *string     `json:"unvani"` // Company title (full name)
+		Adi          *string     `json:"adi"`    // Short name
 		Name         *string     `json:"name"`
 		Slug         *string     `json:"slug"`
 		Logo         *string     `json:"logo"`
@@ -63,20 +67,27 @@ func CreateCompanyHandler(c *gin.Context) {
 		return
 	}
 
+	// Debug: Log received data
+	fmt.Printf("Received company data: unvani=%v, adi=%v, email=%v, phone=%v\n", req.Unvani, req.Adi, req.Email, req.Phone)
+
 	// Validate required fields
-	if req.Title == nil || *req.Title == "" {
+	if req.Unvani == nil || *req.Unvani == "" {
 		if req.Name == nil || *req.Name == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Company title or name is required"})
-			return
+			if req.Adi == nil || *req.Adi == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Company unvani, name or adi is required"})
+				return
+			}
 		}
 	}
 
-	// Use title or name
+	// Use unvani, name or adi for company name
 	name := ""
-	if req.Name != nil && *req.Name != "" {
+	if req.Unvani != nil && *req.Unvani != "" {
+		name = *req.Unvani
+	} else if req.Name != nil && *req.Name != "" {
 		name = *req.Name
-	} else if req.Title != nil {
-		name = *req.Title
+	} else if req.Adi != nil {
+		name = *req.Adi
 	}
 
 	slug := ""
@@ -97,57 +108,83 @@ func CreateCompanyHandler(c *gin.Context) {
 	// Update with additional fields
 	updates := make(map[string]interface{})
 
-	if req.Title != nil {
-		updates["unvani"] = req.Title
+	if req.Unvani != nil && *req.Unvani != "" {
+		updates["unvani"] = req.Unvani
 	}
-	if req.Logo != nil {
+	if req.Adi != nil && *req.Adi != "" {
+		updates["adi"] = req.Adi
+	}
+	// Note: "name" field should not be used, Company.Name maps to "adi" column
+
+	// Handle logo URL
+	if req.Logo != nil && *req.Logo != "" {
 		updates["logo"] = req.Logo
 	}
-	if req.Logo2 != nil {
+
+	// Handle logo2 URL
+	if req.Logo2 != nil && *req.Logo2 != "" {
 		updates["logo2"] = req.Logo2
 	}
-	if req.Email != nil {
+
+	if req.Email != nil && *req.Email != "" {
 		updates["email"] = req.Email
 	}
-	if req.VD != nil {
+	if req.VD != nil && *req.VD != "" {
 		updates["vd"] = req.VD
 	}
-	if req.VN != nil {
+	if req.VN != nil && *req.VN != "" {
 		updates["vn"] = req.VN
 	}
-	if req.Mersis != nil {
+	if req.Mersis != nil && *req.Mersis != "" {
 		updates["mersis"] = req.Mersis
 	}
-	if req.Oda != nil {
+	if req.Oda != nil && *req.Oda != "" {
 		updates["oda"] = req.Oda
 	}
-	if req.OdaNo != nil {
+	if req.OdaNo != nil && *req.OdaNo != "" {
 		updates["odano"] = req.OdaNo
 	}
-	if req.Phone != nil {
+	if req.Phone != nil && *req.Phone != "" {
 		updates["phone"] = req.Phone
 	}
-	if req.Phone2 != nil {
+	if req.Phone2 != nil && *req.Phone2 != "" {
 		updates["phone2"] = req.Phone2
 	}
-	if req.Fax != nil {
+	if req.Fax != nil && *req.Fax != "" {
 		updates["fax"] = req.Fax
 	}
-	if req.Cellphone != nil {
+	if req.Cellphone != nil && *req.Cellphone != "" {
 		updates["cellphone"] = req.Cellphone
 	}
-	if req.URL != nil {
+	if req.URL != nil && *req.URL != "" {
 		updates["url"] = req.URL
 	}
+
+	// Handle JSON fields - convert map to typed struct so GORM can use Value() method
 	if req.Address != nil {
-		updates["address"] = req.Address
+		var address companymodels.Address
+		jsonBytes, _ := json.Marshal(req.Address)
+		if err := json.Unmarshal(jsonBytes, &address); err == nil {
+			updates["address"] = &address
+		}
 	}
 	if req.Coordinates != nil {
-		updates["coordinates"] = req.Coordinates
+		var coordinates companymodels.Coordinates
+		jsonBytes, _ := json.Marshal(req.Coordinates)
+		if err := json.Unmarshal(jsonBytes, &coordinates); err == nil {
+			updates["coordinates"] = &coordinates
+		}
 	}
 	if req.WorkingHours != nil {
-		updates["workinghours"] = req.WorkingHours
+		var workingHours companymodels.WorkingHours
+		jsonBytes, _ := json.Marshal(req.WorkingHours)
+		if err := json.Unmarshal(jsonBytes, &workingHours); err == nil {
+			updates["workinghours"] = &workingHours
+		}
 	}
+
+	// Debug: Log updates
+	fmt.Printf("Updates to apply: %d fields\n", len(updates))
 
 	// Apply updates if any
 	if len(updates) > 0 {
@@ -276,7 +313,12 @@ func GetActiveCompanyHandler(c *gin.Context) {
 
 	company, err := services.GetUserActiveCompany(userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		// If user has no companies, return null instead of error
+		if err.Error() == "user has no companies" {
+			c.JSON(http.StatusOK, nil)
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -437,12 +479,177 @@ func DeleteCompanyHandler(c *gin.Context) {
 		return
 	}
 
-	if err := services.DeleteCompany(companyID); err != nil {
+	// Delete company with logging
+	if err := services.DeleteCompany(companyID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete company"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Company deleted successfully"})
+}
+
+// DeleteCompanyPermanentHandler permanently deletes a company and all related data.
+// Only the company owner may perform this action.
+// @Summary Permanently delete company
+// @Description Permanently deletes a company and all related records and files
+// @Tags Company
+// @Param id path string true "Company ID"
+// @Success 200 {object} object{message=string}
+// @Failure 400 {object} object{error=string}
+// @Failure 401 {object} object{error=string}
+// @Failure 403 {object} object{error=string}
+// @Failure 404 {object} object{error=string}
+// @Failure 500 {object} object{error=string}
+// @Router /api/v1/company/{id}/permanent [delete]
+func DeleteCompanyPermanentHandler(c *gin.Context) {
+	companyIDStr := c.Param("id")
+	companyID, err := uuid.Parse(companyIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid company ID"})
+		return
+	}
+
+	// Get user from context
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	// Check ownership
+	company, err := services.GetCompanyByID(companyID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
+		return
+	}
+
+	if company.UserID == nil || *company.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	// Call service to purge
+	if err := services.PurgeCompany(companyID, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to permanently delete company"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Company permanently deleted"})
+}
+
+// RequestExportBackgroundHandler starts a background export job for a company and emails a download link to the owner.
+func RequestExportBackgroundHandler(c *gin.Context) {
+	companyIDStr := c.Param("id")
+	companyID, err := uuid.Parse(companyIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid company ID"})
+		return
+	}
+
+	// Read models from JSON body: { models: ["members","roles"] }
+	var req struct {
+		Models []string `json:"models"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		// allow empty body
+		req.Models = []string{}
+	}
+
+	// Parse access_token cookie as fallback if Authorization header is not present
+	var userID uuid.UUID
+	if v, exists := c.Get("user_id"); exists {
+		if uid, ok := v.(uuid.UUID); ok {
+			userID = uid
+		}
+	}
+	// If middleware didn't set user, try cookie
+	if userID == uuid.Nil {
+		cookie, err := c.Cookie("access_token")
+		if err != nil || cookie == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		claims, err := services.ValidateJWT(cookie)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
+		}
+		userID = claims.UserID
+	}
+
+	company, err := services.GetCompanyByID(companyID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
+		return
+	}
+	if company.UserID == nil || *company.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only company owner can request an export"})
+		return
+	}
+
+	// Start background goroutine
+	go func() {
+		_, err := services.StartExportJob(companyID, userID, req.Models)
+		if err != nil {
+			// log error
+			log.Printf("background export failed: %v", err)
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "Export started; you will receive an email with a download link when ready."})
+}
+
+// DownloadExportHandler returns the exported file by token. Requires authentication.
+func DownloadExportHandler(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token is required"})
+		return
+	}
+
+	rec, ok := services.GetExport(token)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "export not found or expired"})
+		return
+	}
+
+	// Validate requester is the same user who initiated export
+	var userID uuid.UUID
+	if v, exists := c.Get("user_id"); exists {
+		if uid, ok := v.(uuid.UUID); ok {
+			userID = uid
+		}
+	}
+	if userID == uuid.Nil {
+		// try cookie
+		cookie, err := c.Cookie("access_token")
+		if err != nil || cookie == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		claims, err := services.ValidateJWT(cookie)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
+		}
+		userID = claims.UserID
+	}
+
+	if userID != rec.UserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+		return
+	}
+
+	c.Header("Content-Type", "application/json")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", rec.Filename))
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Write(rec.Data)
 }
 
 // GetActiveCompaniesHandler tüm aktif company'leri getirir (admin)

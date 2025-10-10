@@ -7,12 +7,14 @@ package app
 // @BasePath /api/v1
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"mimbackend/app/migrations"
 	"mimbackend/config"
 	"mimbackend/internal/routes"
-	"mimbackend/internal/services"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -30,17 +32,45 @@ func StartApp() {
 	// DB init
 	config.NewConnection()
 
-	// Initialize Casbin ABAC system
-	err = services.InitCasbin()
-	if err != nil {
-		log.Fatalf("Failed to initialize Casbin ABAC system: %v", err)
+	// Redis init (optional cache layer) — attempt to connect and log status.
+	redisClient, rErr := config.NewRedisClient()
+	if rErr != nil {
+		log.Printf("⚠️  Redis not available or ping failed: %v — cache layer disabled", rErr)
+	} else if redisClient != nil {
+		// Prefer REDIS_URL for message if present
+		redisURL := os.Getenv("REDIS_URL")
+		host := os.Getenv("REDIS_HOST")
+		port := os.Getenv("REDIS_PORT")
+		if redisURL != "" {
+			log.Printf("✅ Redis connected (REDIS_URL=%s)", redisURL)
+		} else {
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			if port == "" {
+				port = "6379"
+			}
+			log.Printf("✅ Redis connected at %s:%s", host, port)
+		}
+		// Quick cache set/get test to verify runtime cache operations
+		ctx := context.Background()
+		testKey := "mim:cache:test"
+		testVal := fmt.Sprintf("%d", time.Now().Unix())
+		if err := redisClient.Set(ctx, testKey, testVal, 5*time.Second).Err(); err != nil {
+			log.Printf("⚠️  Redis cache set failed: %v", err)
+		} else {
+			got, gErr := redisClient.Get(ctx, testKey).Result()
+			if gErr != nil {
+				log.Printf("⚠️  Redis cache get failed: %v", gErr)
+			} else if got != testVal {
+				log.Printf("⚠️  Redis cache mismatch (set %s but got %s)", testVal, got)
+			} else {
+				log.Printf("🔁 Redis cache test OK — set/get roundtrip succeeded")
+			}
+		}
 	}
 
-	// Initialize default policies
-	err = services.InitializeDefaultPolicies()
-	if err != nil {
-		log.Printf("Warning: Failed to initialize default policies: %v", err)
-	}
+	// Casbin removed: no-op initialization of authorization subsystem
 
 	// Migration çalıştır
 	migrations.RunMigrations()

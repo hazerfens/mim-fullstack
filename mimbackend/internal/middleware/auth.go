@@ -70,14 +70,6 @@ func JWTMiddleware() gin.HandlerFunc {
 		c.Set("user_email", claims.Email)
 		c.Set("user_role", claims.Role)
 
-		// Sync user role with Casbin
-		err = services.SyncUserRoleWithCasbin(claims.UserID)
-		if err != nil {
-			// Log error but don't fail authentication
-			// This allows the request to continue even if role sync fails
-			c.Set("role_sync_error", err.Error())
-		}
-
 		c.Next()
 	}
 }

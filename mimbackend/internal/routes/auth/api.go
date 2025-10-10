@@ -23,6 +23,10 @@ func SetupAPIRoutes(router gin.IRouter) {
 	userGroup.Use(middleware.JWTMiddleware(), middleware.AdminMiddleware())
 	{
 		userGroup.GET("", getUsersHandler)
+		// Admin operations for user management
+		userGroup.GET("/paginated", handlers.GetUsersPaginatedHandler)
+		userGroup.PUT("/:userId", handlers.UpdateUserHandler)
+		userGroup.DELETE("/:userId", handlers.DeleteUserHandler)
 		userGroup.GET("/:userId/permissions", handlers.GetUserPermissionsHandler)
 
 		// User custom permissions management
@@ -42,7 +46,8 @@ func getUsersHandler(c *gin.Context) {
 	}
 
 	var users []auth.User
-	if err := db.Preload("RoleModel").Find(&users).Error; err != nil {
+	// Include soft-deleted users so admin can see inactive accounts
+	if err := db.Unscoped().Preload("RoleModel").Find(&users).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to fetch users"})
 		return
 	}
@@ -67,7 +72,8 @@ func getUsersHandler(c *gin.Context) {
 			"email":      user.Email,
 			"first_name": firstName,
 			"last_name":  lastName,
-			"is_active":  true, // User modelinde IsActive yok, varsayılan true
+			// derive active flag from DeletedAt
+			"is_active":  !user.DeletedAt.Valid,
 			"created_at": user.CreatedAt,
 		}
 

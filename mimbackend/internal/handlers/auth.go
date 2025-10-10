@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"mimbackend/internal/services"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -662,6 +662,218 @@ func UserMeHandler(c *gin.Context) {
 	})
 }
 
+// getUsersPaginatedHandler returns paginated users for admin UI
+func GetUsersPaginatedHandler(c *gin.Context) {
+	page := 1
+	pageSize := 20
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+		if page < 1 {
+			page = 1
+		}
+	}
+	if ps := c.Query("page_size"); ps != "" {
+		fmt.Sscanf(ps, "%d", &pageSize)
+		if pageSize < 1 {
+			pageSize = 20
+		}
+	}
+	q := c.Query("q")
+
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	var users []auth.User
+	// Include soft-deleted users so admin can see both active and inactive accounts
+	query := db.Unscoped().Preload("RoleModel").Model(&auth.User{})
+	if q != "" {
+		like := "%" + q + "%"
+		query = query.Where("email LIKE ? OR full_name LIKE ?", like, like)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Count failed"})
+		return
+	}
+
+	offset := (page - 1) * pageSize
+	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&users).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to fetch users"})
+		return
+	}
+
+	var userList []gin.H
+	for _, user := range users {
+		firstName := ""
+		lastName := ""
+		if user.FullName != nil {
+			parts := strings.Split(*user.FullName, " ")
+			if len(parts) > 0 {
+				firstName = parts[0]
+			}
+			if len(parts) > 1 {
+				lastName = strings.Join(parts[1:], " ")
+			}
+		}
+		ud := gin.H{
+			"id":         user.ID,
+			"email":      user.Email,
+			"first_name": firstName,
+			"last_name":  lastName,
+			// is_active is derived from whether DeletedAt is set
+			"is_active":  !user.DeletedAt.Valid,
+			"created_at": user.CreatedAt,
+		}
+		if user.ImageURL != nil {
+			ud["image_url"] = *user.ImageURL
+		}
+		if user.RoleID != nil && user.RoleModel != nil && user.RoleModel.Name != nil {
+			ud["role_id"] = user.RoleID
+			ud["role_name"] = *user.RoleModel.Name
+		}
+		userList = append(userList, ud)
+	}
+
+	c.JSON(200, gin.H{"users": userList, "total": total, "page": page, "page_size": pageSize})
+}
+
+// updateUserHandler updates basic user fields
+func UpdateUserHandler(c *gin.Context) {
+	userIDStr := c.Param("userId")
+	uid, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var payload struct {
+		FirstName *string `json:"first_name"`
+		LastName  *string `json:"last_name"`
+		IsActive  *bool   `json:"is_active"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	var user auth.User
+	// Use Unscoped so admins can update/reactivate soft-deleted users
+	if err := db.Unscoped().Preload("RoleModel").Where("id = ?", uid).First(&user).Error; err != nil {
+		c.JSON(404, gin.H{"error": "User not found"})
+		return
+	}
+
+	if payload.FirstName != nil {
+		full := *payload.FirstName
+		if payload.LastName != nil && *payload.LastName != "" {
+			full = full + " " + *payload.LastName
+		}
+		user.FullName = &full
+	}
+	if payload.IsActive != nil {
+		// Map UI is_active to soft-delete (DeletedAt)
+		if *payload.IsActive {
+			// Reactivate: restore the user if soft-deleted
+			if err := db.Unscoped().Model(&auth.User{}).Where("id = ?", uid).Update("deleted_at", nil).Error; err != nil {
+				c.JSON(500, gin.H{"error": "Failed to reactivate user"})
+				return
+			}
+		} else {
+			// Deactivate: soft-delete
+			if err := db.Where("id = ?", uid).Delete(&auth.User{}).Error; err != nil {
+				c.JSON(500, gin.H{"error": "Failed to deactivate user"})
+				return
+			}
+		}
+	}
+
+	// Persist potential full name changes (use Unscoped to ensure updates apply for soft-deleted rows)
+	if payload.FirstName != nil || payload.LastName != nil {
+		if payload.FirstName != nil {
+			full := *payload.FirstName
+			if payload.LastName != nil && *payload.LastName != "" {
+				full = full + " " + *payload.LastName
+			}
+			if err := db.Unscoped().Model(&auth.User{}).Where("id = ?", uid).Update("full_name", full).Error; err != nil {
+				c.JSON(500, gin.H{"error": "Failed to update user name"})
+				return
+			}
+		}
+		// refresh user after update
+		if err := db.Unscoped().Preload("RoleModel").Where("id = ?", uid).First(&user).Error; err != nil {
+			c.JSON(500, gin.H{"error": "Failed to fetch updated user"})
+			return
+		}
+	}
+
+	// Log event for potential external broadcaster
+	log.Printf("User updated: %s", user.ID)
+
+	// Build readable name parts
+	firstName := ""
+	lastName := ""
+	if user.FullName != nil {
+		parts := strings.Split(*user.FullName, " ")
+		if len(parts) > 0 {
+			firstName = parts[0]
+		}
+		if len(parts) > 1 {
+			lastName = strings.Join(parts[1:], " ")
+		}
+	}
+
+	// Return updated representation including active flag
+	resp := gin.H{"user": gin.H{
+		"id":         user.ID,
+		"email":      user.Email,
+		"first_name": firstName,
+		"last_name":  lastName,
+		"is_active":  !user.DeletedAt.Valid,
+	}}
+	c.JSON(200, resp)
+}
+
+// deleteUserHandler deletes a user
+func DeleteUserHandler(c *gin.Context) {
+	userIDStr := c.Param("userId")
+	uid, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	// Soft-delete by GORM Delete
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Database connection failed"})
+		return
+	}
+	// ensure exists
+	var user auth.User
+	if err := db.Where("id = ?", uid).First(&user).Error; err != nil {
+		c.JSON(404, gin.H{"error": "User not found"})
+		return
+	}
+	if err := db.Delete(&user).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to delete user"})
+		return
+	}
+
+	log.Printf("User deleted: %s", uid)
+
+	c.JSON(200, gin.H{"message": "User deleted"})
+}
+
 // GetUserPermissionsHandler kullanıcının izinlerini getirir
 // @Summary Get user permissions
 // @Description Get permissions for a specific user based on their role
@@ -696,26 +908,42 @@ func GetUserPermissionsHandler(c *gin.Context) {
 		return
 	}
 
-	// Return role permissions
-	if user.RoleModel != nil {
-		// Parse permissions JSON string
-		var permissions basemodels.Permissions
-		if user.RoleModel.Permissions != nil && *user.RoleModel.Permissions != "" {
-			if err := json.Unmarshal([]byte(*user.RoleModel.Permissions), &permissions); err != nil {
-				log.Printf("❌ Error parsing permissions for user %s: %v", userID, err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse permissions"})
-				return
-			}
+	// Optionally limit to a specific company context
+	companyIDStr := c.Query("company_id")
+	var companyID *uuid.UUID
+	if companyIDStr != "" {
+		if cid, err := uuid.Parse(companyIDStr); err == nil {
+			companyID = &cid
 		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"permissions": permissions,
-			"role_name":   user.RoleModel.Name,
-		})
-	} else {
-		c.JSON(http.StatusOK, gin.H{
-			"permissions": basemodels.Permissions{},
-			"role_name":   "No role assigned",
-		})
 	}
+
+	// Build effective permissions map for the user for each defined permission in the catalog
+	catalog, perr := services.ListPermissions()
+	if perr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load permission catalog"})
+		return
+	}
+
+	result := map[string]map[string]bool{}
+	for _, perm := range catalog {
+		if perm.Name == "" {
+			continue
+		}
+		allowed, gErr := services.GetAllowedActionsForUserForPermissionName(user.ID, perm.Name, companyID)
+		if gErr != nil {
+			log.Printf("warning: could not evaluate permission %s for user %s: %v", perm.Name, user.ID.String(), gErr)
+			continue
+		}
+		result[perm.Name] = allowed
+	}
+
+	roleName := ""
+	if user.RoleModel != nil && user.RoleModel.Name != nil {
+		roleName = *user.RoleModel.Name
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"permissions": result,
+		"role_name":   roleName,
+	})
 }

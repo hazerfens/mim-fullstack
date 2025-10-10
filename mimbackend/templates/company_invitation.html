@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Şirket Daveti</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .company-info {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .company-info h2 {
+            margin: 0 0 10px 0;
+            font-size: 20px;
+            color: #333;
+        }
+        .company-info p {
+            margin: 5px 0;
+            color: #666;
+        }
+        .role-badge {
+            display: inline-block;
+            background: #667eea;
+            color: #ffffff;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            margin-top: 10px;
+        }
+        .cta-button {
+            display: inline-block;
+            background: #667eea;
+            color: #ffffff;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 20px 0;
+            transition: background 0.3s ease;
+        }
+        .cta-button:hover {
+            background: #5568d3;
+        }
+        .info-box {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .info-box p {
+            margin: 0;
+            color: #856404;
+            font-size: 14px;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 20px 30px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .divider {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 30px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎉 Şirket Davetiniz Var!</h1>
+        </div>
+        
+        <div class="content">
+            <p>Merhaba,</p>
+            
+            <p><strong>{{.InviterName}}</strong> sizi <strong>{{.CompanyName}}</strong> şirketine katılmaya davet ediyor.</p>
+            
+            <div class="company-info">
+                <h2>{{.CompanyName}}</h2>
+                <p><strong>Rol:</strong> <span class="role-badge">{{.RoleName}}</span></p>
+                <p><strong>Davet Eden:</strong> {{.InviterName}} ({{.InviterEmail}})</p>
+            </div>
+            
+            <p>Bu daveti kabul ederek şirket ekibine katılabilir ve belirlenen rol yetkileriyle sistemde çalışmaya başlayabilirsiniz.</p>
+            
+            <div style="text-align: center;">
+                <a href="{{.AcceptURL}}" class="cta-button">Daveti Kabul Et</a>
+            </div>
+            
+            <div class="info-box">
+                <p><strong>⏱️ Önemli:</strong> Bu davet linki {{.ExpiresAt}} tarihine kadar geçerlidir.</p>
+            </div>
+            
+            <div class="divider"></div>
+            
+            <p style="font-size: 14px; color: #666;">
+                Eğer bu daveti kabul etmek istemiyorsanız, bu e-postayı görmezden gelebilirsiniz. 
+                Hesabınızda herhangi bir değişiklik yapılmayacaktır.
+            </p>
+            
+            <p style="font-size: 14px; color: #666;">
+                Buton çalışmıyorsa, aşağıdaki linki tarayıcınıza kopyalayabilirsiniz:<br>
+                <a href="{{.AcceptURL}}" style="color: #667eea; word-break: break-all;">{{.AcceptURL}}</a>
+            </p>
+        </div>
+        
+        <div class="footer">
+            <p>Bu e-posta <strong>{{.CompanyName}}</strong> tarafından gönderilmiştir.</p>
+            <p>Sorularınız için: <a href="mailto:{{.CompanyEmail}}">{{.CompanyEmail}}</a></p>
+        </div>
+    </div>
+</body>
+</html>
