@@ -83,6 +83,7 @@ const MyBreadCrumbs = () => {
     materialinventory: "Malzemeler",
     settings: "Ayarlar",
     roles: "Roller",
+    members: "Kullanıcılar",
     'material-inventory': "Malzemeler",
     'molds': "Yarı Mamüller",
     'price': "Fiyatlandırmalar",

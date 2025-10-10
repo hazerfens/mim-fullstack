@@ -29,14 +29,17 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useSession } from "@/components/providers/session-provider";
-import { logoutAction } from "@/features/actions/auth-action";
+import { useLogoutClient } from '@/stores/session-store';
 import { useRouter } from "next/navigation";
-import { clearClientSession } from "@/lib/session-helpers";
+// clearClientSession removed in favor of centralized logoutClient in session store
+import { useCompanyStore } from "@/stores/company-store";
 
 export function NavUser() {
   const { user } = useSession();
   const { isMobile } = useSidebar();
   const router = useRouter();
+  const { clearCompanies } = useCompanyStore();
+  const logoutClient = useLogoutClient();
   const [imageError, setImageError] = React.useState(false);
   const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   const initials = React.useMemo(() => {
@@ -62,17 +65,21 @@ export function NavUser() {
   const handleLogout = React.useCallback(async () => {
     try {
       setIsLoggingOut(true);
-      await logoutAction();
-      clearClientSession(); // Zustand store'u temizle
-      toast.success("Çıkış yapıldı");
-      router.push('/');
-      router.refresh();
+      const res = await logoutClient();
+      if (res.status !== 'success') {
+        toast.error(res.message || 'Çıkış sırasında bir hata oluştu');
+        setIsLoggingOut(false);
+        return;
+      }
+      toast.success('Çıkış yapıldı');
+      clearCompanies();
+      router.replace('/auth/login');
     } catch (error) {
-      console.error("Logout error", error);
-      toast.error("Çıkış sırasında bir hata oluştu");
+      console.error('Logout error', error);
+      toast.error('Çıkış sırasında bir hata oluştu');
       setIsLoggingOut(false);
     }
-  }, [router]);
+  }, [logoutClient, clearCompanies, router]);
 
   const AvatarVisual = () => (
     <Avatar className="h-8 w-8 rounded-lg">

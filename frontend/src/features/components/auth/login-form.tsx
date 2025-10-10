@@ -19,6 +19,7 @@ import { FormSuccess } from "./form-success";
 import { loginAction } from "@/features/actions/auth-action";
 import { toast } from "sonner";
 import { useSession } from "@/components/providers/session-provider";
+import { useLoginClient } from '@/stores/session-store';
 
 
 export const LoginForm = () => {
@@ -33,6 +34,7 @@ export const LoginForm = () => {
   const [success, setSuccess] = useState<string | undefined>();
   const [isPending, setIsPending] = useState(false);
   const { refreshSession } = useSession();
+  const applyLoginResult = useLoginClient();
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(LoginFormSchema),
@@ -58,8 +60,13 @@ export const LoginForm = () => {
 
       if (result.status === "success") {
         setSuccess("Başarıyla giriş yaptınız! Yönlendiriliyorsunuz...");
-        // Context, state'i zaten güncellediği için doğrudan yönlendirme yapabiliriz.
         toast.success("Giriş başarılı!");
+        // Apply server-returned user quickly into client store for immediate
+        // UI responsiveness, then trigger a full refresh to pick up server
+        // side cookies and authoritative state.
+        try {
+          applyLoginResult(result.user ?? null);
+        } catch {}
         await refreshSession();
         router.push(callbackUrl);
       } else {

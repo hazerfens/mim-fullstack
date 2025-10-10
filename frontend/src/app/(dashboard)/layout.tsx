@@ -8,6 +8,7 @@ import {
 import { cookies } from "next/headers";
 import { AppSidebar } from "@/features/components/dashboard/app-sidebar";
 import MyBreadCrumbs from "@/features/components/dashboard/breadcrumbs";
+import DashboardGuard from '@/features/components/dashboard/DashboardGuard';
 
 // import Image from "next/image";
 
@@ -36,6 +37,7 @@ const DashboardLayout = async ({ children }: { children: React.ReactNode }) => {
           </header>
           <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
             <div className="min-h-[100vh] flex-1 rounded-xl bg-muted/50 p-4 md:min-h-min">
+              <DashboardGuard />
               {children}
               
             </div>

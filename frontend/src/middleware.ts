@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// Simple JWT decode (no verification, just parsing)
+function decodeJWT(token: string): { role?: string; user_id?: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
@@ -65,7 +78,16 @@ export function middleware(request: NextRequest) {
 
   // For protected routes, check role-based authorization
   if (isProtected) {
-    // Add role checks here if necessary, but for now, just allow if authenticated
+    // Check if user is trying to access dashboard
+    if (pathname.startsWith('/dashboard')) {
+      const payload = decodeJWT(accessToken || '');
+      
+      // If role is "user", deny access to dashboard
+      if (payload?.role === 'user') {
+        const unauthorizedUrl = new URL('/unauthorized', request.url);
+        return NextResponse.redirect(unauthorizedUrl);
+      }
+    }
   }
 
   return NextResponse.next()

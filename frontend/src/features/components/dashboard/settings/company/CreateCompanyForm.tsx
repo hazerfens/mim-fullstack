@@ -1,17 +1,19 @@
-'use client'
+﻿'use client'
 
 import React, { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Image from 'next/image'
-import { Building2, Upload, X, Loader2, MapPin, Phone, Mail, Globe, FileText } from 'lucide-react'
+import { Building2, Loader2, MapPin, Phone, Mail, Globe, FileText, Briefcase, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Separator } from '@/components/ui/separator'
+import { FileUpload, type FileWithPreview } from '@/components/ui/file-upload'
 import { toast } from 'sonner'
 import { createCompanyAction } from '@/features/actions/company-action'
+import { useCompanyStore } from '@/stores/company-store'
+import { cn } from '@/lib/utils'
 
 interface CreateCompanyFormProps {
   onSuccess?: () => void
@@ -20,35 +22,26 @@ interface CreateCompanyFormProps {
 
 export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess, onCancel }) => {
   const router = useRouter()
-
   const [loading, setLoading] = useState(false)
-  const [logoPreview, setLogoPreview] = useState<string | null>(null)
-  const [logo2Preview, setLogo2Preview] = useState<string | null>(null)
+  const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set())
 
-  // Basic Info
   const [formData, setFormData] = useState({
     unvani: '',
     adi: '',
     slug: '',
-    logo: '',
-    logo2: '',
+    logo: null as FileWithPreview | null,
+    logo2: null as FileWithPreview | null,
     url: '',
     email: '',
-    
-    // Tax & Legal
-    vd: '', // Tax Office
-    vn: '', // Tax Number
+    vd: '',
+    vn: '',
     mersis: '',
-    oda: '', // Chamber
-    odano: '', // Chamber Number
-    
-    // Contact
+    oda: '',
+    odano: '',
     phone: '',
     phone2: '',
     fax: '',
     cellphone: '',
-    
-    // Address
     address: {
       street: '',
       city: '',
@@ -56,14 +49,10 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
       country: 'Türkiye',
       postal_code: ''
     },
-    
-    // Coordinates
     coordinates: {
       lat: '',
       lng: ''
     },
-    
-    // Working Hours
     working_hours: {
       monday: { open: '09:00', close: '18:00', closed: false },
       tuesday: { open: '09:00', close: '18:00', closed: false },
@@ -78,7 +67,6 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
     
-    // Auto-generate slug from title
     if (field === 'unvani' && !formData.slug) {
       const slug = value.toLowerCase()
         .replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i')
@@ -87,6 +75,10 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
         .replace(/^-+|-+$/g, '')
       setFormData(prev => ({ ...prev, slug }))
     }
+
+    if (field === 'unvani' && value) {
+      setCompletedSteps(prev => new Set(prev).add('basic'))
+    }
   }
 
   const handleAddressChange = (field: string, value: string) => {
@@ -94,6 +86,10 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
       ...prev,
       address: { ...prev.address, [field]: value }
     }))
+    
+    if (value) {
+      setCompletedSteps(prev => new Set(prev).add('location'))
+    }
   }
 
   const handleCoordinatesChange = (field: string, value: string) => {
@@ -103,36 +99,31 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
     }))
   }
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'logo' | 'logo2') => {
-    const file = e.target.files?.[0]
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        toast.error('Logo dosyası 5MB\'dan küçük olmalıdır')
-        return
-      }
-
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        const base64 = reader.result as string
-        if (type === 'logo') {
-          setLogoPreview(base64)
-          setFormData(prev => ({ ...prev, logo: base64 }))
-        } else {
-          setLogo2Preview(base64)
-          setFormData(prev => ({ ...prev, logo2: base64 }))
-        }
-      }
-      reader.readAsDataURL(file)
-    }
+  const handleLogoChange = (file: FileWithPreview | null, type: 'logo' | 'logo2') => {
+    setFormData(prev => ({ ...prev, [type]: file }))
   }
 
-  const removeLogo = (type: 'logo' | 'logo2') => {
-    if (type === 'logo') {
-      setLogoPreview(null)
-      setFormData(prev => ({ ...prev, logo: '' }))
-    } else {
-      setLogo2Preview(null)
-      setFormData(prev => ({ ...prev, logo2: '' }))
+  const uploadFile = async (file: File, companySlug: string, fileType: 'logo' | 'logo2'): Promise<string | null> => {
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('companySlug', companySlug)
+      formData.append('fileType', fileType)
+
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error('Upload failed')
+      }
+
+      const data = await response.json()
+      return data.url
+    } catch (error) {
+      console.error('File upload error:', error)
+      return null
     }
   }
 
@@ -146,31 +137,49 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
 
     setLoading(true)
     try {
-      console.log('� Creating company with server action...')
+      // Upload logo files first
+      let logoUrl: string | null = null
+      let logo2Url: string | null = null
+
+      if (formData.logo) {
+        logoUrl = await uploadFile(formData.logo, formData.slug, 'logo')
+        if (!logoUrl) {
+          toast.error('Logo yüklenemedi')
+        }
+      }
+
+      if (formData.logo2) {
+        logo2Url = await uploadFile(formData.logo2, formData.slug, 'logo2')
+        if (!logo2Url) {
+          toast.error('Alternatif logo yüklenemedi')
+        }
+      }
 
       const result = await createCompanyAction({
-        title: formData.unvani,
+        unvani: formData.unvani,
+        adi: formData.adi || undefined,
         name: formData.adi || formData.unvani,
         slug: formData.slug,
-        logo: formData.logo || null,
-        logo2: formData.logo2 || null,
-        url: formData.url || null,
-        email: formData.email || null,
-        vd: formData.vd || null,
-        vn: formData.vn || null,
-        mersis: formData.mersis || null,
-        oda: formData.oda || null,
-        odano: formData.odano || null,
-        phone: formData.phone || null,
-        phone2: formData.phone2 || null,
-        fax: formData.fax || null,
-        cellphone: formData.cellphone || null,
-        address: Object.values(formData.address).some(v => v) ? formData.address : null,
-        coordinates: formData.coordinates.lat && formData.coordinates.lng ? formData.coordinates : null,
+        logo: logoUrl,
+        logo2: logo2Url,
+        url: formData.url || undefined,
+        email: formData.email || undefined,
+        vd: formData.vd || undefined,
+        vn: formData.vn || undefined,
+        mersis: formData.mersis || undefined,
+        oda: formData.oda || undefined,
+        odano: formData.odano || undefined,
+        phone: formData.phone || undefined,
+        phone2: formData.phone2 || undefined,
+        fax: formData.fax || undefined,
+        cellphone: formData.cellphone || undefined,
+        address: Object.values(formData.address).some(v => v) ? formData.address : undefined,
+        coordinates: formData.coordinates.lat && formData.coordinates.lng ? {
+          lat: parseFloat(formData.coordinates.lat),
+          lng: parseFloat(formData.coordinates.lng)
+        } : undefined,
         workinghours: formData.working_hours,
       })
-
-      console.log('📥 Server action result:', result)
 
       if (result.status === 'error') {
         if (result.statusCode === 401) {
@@ -185,11 +194,32 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
         throw new Error(result.message)
       }
 
-      console.log('✅ Company created:', result.data)
-
       toast.success('Şirket oluşturuldu', {
         description: `${formData.unvani} başarıyla oluşturuldu`
       })
+
+      // Update client-side company store and persist locally so we avoid
+      // an extra server-side GET for the active company. This keeps the
+      // UI responsive and prevents unnecessary backend calls.
+      try {
+        const cs = useCompanyStore.getState();
+        const existing = Array.isArray(cs.companies) ? cs.companies : [];
+        const newCompanies = [...existing, (result.data as any)];
+        // Hydrate store with new companies and set the created company as active
+        cs.hydrateCompanies(newCompanies as any, result.data as any);
+        // Persist an explicit company-storage object so SessionProvider can
+        // hydrate on next load without querying the server.
+        try {
+          if (typeof window !== 'undefined' && window.localStorage) {
+            const obj = { companies: newCompanies, activeCompany: result.data };
+            window.localStorage.setItem('company-storage', JSON.stringify(obj));
+          }
+        } catch (e) {
+          try { console.warn('[create-company] failed to persist companies locally', e); } catch {}
+        }
+      } catch (err) {
+        console.warn('Failed to hydrate local company store after create:', err);
+      }
 
       if (onSuccess) {
         onSuccess()
@@ -207,425 +237,392 @@ export const CreateCompanyForm: React.FC<CreateCompanyFormProps> = ({ onSuccess,
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <Tabs defaultValue="basic" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="basic">Temel Bilgiler</TabsTrigger>
-          <TabsTrigger value="legal">Yasal Bilgiler</TabsTrigger>
-          <TabsTrigger value="contact">İletişim</TabsTrigger>
-          <TabsTrigger value="location">Konum</TabsTrigger>
-        </TabsList>
-
-        {/* Basic Info */}
-        <TabsContent value="basic" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Building2 className="h-5 w-5" />
-                Temel Şirket Bilgileri
-              </CardTitle>
-              <CardDescription>
-                Şirketinizin temel bilgilerini girin
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2 col-span-2">
-                  <Label htmlFor="unvani">Ünvan *</Label>
+    <form onSubmit={handleSubmit} className='flex h-[calc(95vh-180px)] flex-col'>
+      <ScrollArea className='h-[calc(95vh-300px)]'>
+        <div className='space-y-4 px-5 py-4'>
+          <section className='space-y-4'>
+            <div className='flex items-center gap-3'>
+              <div className={cn(
+                'flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors',
+                completedSteps.has('basic') ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground'
+              )}>
+                {completedSteps.has('basic') ? <Check className='h-3 w-3' /> : <Building2 className='h-3 w-3' />}
+              </div>
+              <div>
+                <h3 className='font-semibold text-lg'>Temel Bilgiler</h3>
+                <p className='text-sm text-muted-foreground'>Şirketinizin temel bilgilerini girin</p>
+              </div>
+            </div>
+            
+            <div className='ml-4 space-y-4 border-l-2 border-muted pl-4'>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='space-y-2 sm:col-span-2'>
+                  <Label htmlFor='unvani' className='flex items-center gap-2'>
+                    <Briefcase className='h-4 w-4' />
+                    Ünvan *
+                  </Label>
                   <Input
-                    id="unvani"
-                    placeholder="Örn: Acme Teknoloji A.Ş."
+                    id='unvani'
+                    placeholder='Örn: Acme Teknoloji A.Ş.'
                     value={formData.unvani}
                     onChange={(e) => handleInputChange('unvani', e.target.value)}
                     required
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="adi">Kısa Ad</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='adi'>Kısa Ad</Label>
                   <Input
-                    id="adi"
-                    placeholder="Örn: Acme Tech"
+                    id='adi'
+                    placeholder='Örn: Acme Tech'
                     value={formData.adi}
                     onChange={(e) => handleInputChange('adi', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="slug">Slug (URL için) *</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='slug'>Slug (URL için) *</Label>
                   <Input
-                    id="slug"
-                    placeholder="acme-teknoloji"
+                    id='slug'
+                    placeholder='acme-teknoloji'
                     value={formData.slug}
                     onChange={(e) => handleInputChange('slug', e.target.value)}
                     required
                   />
-                  <p className="text-xs text-muted-foreground">
-                    URL: yoursite.com/{formData.slug || 'slug'}
-                  </p>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="url">
-                    <Globe className="inline h-4 w-4 mr-1" />
+                <div className='space-y-2'>
+                  <Label htmlFor='url'>
+                    <Globe className='inline h-4 w-4 mr-1' />
                     Web Sitesi
                   </Label>
                   <Input
-                    id="url"
-                    type="url"
-                    placeholder="https://www.example.com"
+                    id='url'
+                    type='url'
+                    placeholder='https://www.example.com'
                     value={formData.url}
                     onChange={(e) => handleInputChange('url', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="email">
-                    <Mail className="inline h-4 w-4 mr-1" />
+                <div className='space-y-2'>
+                  <Label htmlFor='email'>
+                    <Mail className='inline h-4 w-4 mr-1' />
                     E-posta
                   </Label>
                   <Input
-                    id="email"
-                    type="email"
-                    placeholder="info@example.com"
+                    id='email'
+                    type='email'
+                    placeholder='info@example.com'
                     value={formData.email}
                     onChange={(e) => handleInputChange('email', e.target.value)}
                   />
                 </div>
               </div>
 
-              {/* Logo Upload */}
-              <div className="grid grid-cols-2 gap-4 pt-4">
-                <div className="space-y-2">
-                  <Label>Logo (Ana)</Label>
-                  <div className="flex items-center gap-4">
-                    {logoPreview ? (
-                      <div className="relative w-24 h-24 border rounded-lg overflow-hidden">
-                        <Image 
-                          src={logoPreview} 
-                          alt="Logo preview" 
-                          width={96}
-                          height={96}
-                          className="w-full h-full object-contain" 
-                        />
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="icon"
-                          className="absolute top-1 right-1 h-6 w-6"
-                          onClick={() => removeLogo('logo')}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <label className="w-24 h-24 border-2 border-dashed rounded-lg flex items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors">
-                        <Upload className="h-6 w-6 text-muted-foreground" />
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => handleLogoUpload(e, 'logo')}
-                        />
-                      </label>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      PNG, JPG veya SVG. Max 5MB.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Logo (Alternatif)</Label>
-                  <div className="flex items-center gap-4">
-                    {logo2Preview ? (
-                      <div className="relative w-24 h-24 border rounded-lg overflow-hidden">
-                        <Image 
-                          src={logo2Preview} 
-                          alt="Logo 2 preview" 
-                          width={96}
-                          height={96}
-                          className="w-full h-full object-contain" 
-                        />
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="icon"
-                          className="absolute top-1 right-1 h-6 w-6"
-                          onClick={() => removeLogo('logo2')}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <label className="w-24 h-24 border-2 border-dashed rounded-lg flex items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors">
-                        <Upload className="h-6 w-6 text-muted-foreground" />
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => handleLogoUpload(e, 'logo2')}
-                        />
-                      </label>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      Koyu tema için beyaz logo
-                    </p>
-                  </div>
-                </div>
+              <div className='grid gap-4 pt-2 sm:grid-cols-2'>
+                <FileUpload
+                  label='Ana Logo'
+                  description='PNG, JPG veya SVG. Max: 5MB'
+                  value={formData.logo || undefined}
+                  onChange={(file) => handleLogoChange(file, 'logo')}
+                  accept={{ 'image/*': ['.png', '.jpg', '.jpeg', '.svg', '.webp'] }}
+                  maxSize={5 * 1024 * 1024}
+                />
+                
+                <FileUpload
+                  label='Alternatif Logo'
+                  description='Koyu tema için. Max: 5MB'
+                  value={formData.logo2 || undefined}
+                  onChange={(file) => handleLogoChange(file, 'logo2')}
+                  accept={{ 'image/*': ['.png', '.jpg', '.jpeg', '.svg', '.webp'] }}
+                  maxSize={5 * 1024 * 1024}
+                />
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          </section>
 
-        {/* Legal Info */}
-        <TabsContent value="legal" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5" />
-                Yasal ve Mali Bilgiler
-              </CardTitle>
-              <CardDescription>
-                Vergi dairesi, vergi numarası ve diğer yasal bilgiler
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="vd">Vergi Dairesi</Label>
+          <Separator />
+
+          <section className='space-y-2'>
+            <div className='flex items-center gap-3'>
+              <div className={cn(
+                'flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors',
+                completedSteps.has('legal') ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground'
+              )}>
+                {completedSteps.has('legal') ? <Check className='h-3 w-3' /> : <FileText className='h-3 w-3' />}
+              </div>
+              <div>
+                <h3 className='font-semibold text-lg'>Yasal Bilgiler</h3>
+                <p className='text-sm text-muted-foreground'>Vergi dairesi ve diğer yasal bilgiler</p>
+              </div>
+            </div>
+            
+            <div className='ml-4 space-y-4 border-l-2 border-muted pl-4'>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='space-y-2'>
+                  <Label htmlFor='vd'>Vergi Dairesi</Label>
                   <Input
-                    id="vd"
-                    placeholder="Örn: Kadıköy"
+                    id='vd'
+                    placeholder='Örn: Kadıköy'
                     value={formData.vd}
-                    onChange={(e) => handleInputChange('vd', e.target.value)}
+                    onChange={(e) => {
+                      handleInputChange('vd', e.target.value)
+                      if (e.target.value) setCompletedSteps(prev => new Set(prev).add('legal'))
+                    }}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="vn">Vergi Numarası</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='vn'>Vergi Numarası</Label>
                   <Input
-                    id="vn"
-                    placeholder="1234567890"
+                    id='vn'
+                    placeholder='1234567890'
                     value={formData.vn}
                     onChange={(e) => handleInputChange('vn', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2 col-span-2">
-                  <Label htmlFor="mersis">MERSİS Numarası</Label>
+                <div className='space-y-2 sm:col-span-2'>
+                  <Label htmlFor='mersis'>MERSİS Numarası</Label>
                   <Input
-                    id="mersis"
-                    placeholder="0123456789012345"
+                    id='mersis'
+                    placeholder='0123456789012345'
                     value={formData.mersis}
                     onChange={(e) => handleInputChange('mersis', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="oda">Oda</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='oda'>Oda</Label>
                   <Input
-                    id="oda"
-                    placeholder="Örn: İstanbul Ticaret Odası"
+                    id='oda'
+                    placeholder='Örn: İTO'
                     value={formData.oda}
                     onChange={(e) => handleInputChange('oda', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="odano">Oda Numarası</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='odano'>Oda Numarası</Label>
                   <Input
-                    id="odano"
-                    placeholder="123456"
+                    id='odano'
+                    placeholder='123456'
                     value={formData.odano}
                     onChange={(e) => handleInputChange('odano', e.target.value)}
                   />
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          </section>
 
-        {/* Contact Info */}
-        <TabsContent value="contact" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Phone className="h-5 w-5" />
-                İletişim Bilgileri
-              </CardTitle>
-              <CardDescription>
-                Telefon, faks ve diğer iletişim bilgileri
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Telefon</Label>
+          <Separator />
+
+          <section className='space-y-2'>
+            <div className='flex items-center gap-3'>
+              <div className={cn(
+                'flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors',
+                completedSteps.has('contact') ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground'
+              )}>
+                {completedSteps.has('contact') ? <Check className='h-3 w-3' /> : <Phone className='h-3 w-3' />}
+              </div>
+              <div>
+                <h3 className='font-semibold text-lg'>İletişim Bilgileri</h3>
+                <p className='text-sm text-muted-foreground'>Telefon ve faks bilgileri</p>
+              </div>
+            </div>
+            
+            <div className='ml-4 space-y-4 border-l-2 border-muted pl-4'>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='space-y-2'>
+                  <Label htmlFor='phone'>Telefon</Label>
                   <Input
-                    id="phone"
-                    type="tel"
-                    placeholder="+90 (212) 123 45 67"
+                    id='phone'
+                    type='tel'
+                    placeholder='+90 (212) 123 45 67'
                     value={formData.phone}
-                    onChange={(e) => handleInputChange('phone', e.target.value)}
+                    onChange={(e) => {
+                      handleInputChange('phone', e.target.value)
+                      if (e.target.value) setCompletedSteps(prev => new Set(prev).add('contact'))
+                    }}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="phone2">Telefon 2</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='cellphone'>Cep Telefonu</Label>
                   <Input
-                    id="phone2"
-                    type="tel"
-                    placeholder="+90 (212) 123 45 68"
-                    value={formData.phone2}
-                    onChange={(e) => handleInputChange('phone2', e.target.value)}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="cellphone">Cep Telefonu</Label>
-                  <Input
-                    id="cellphone"
-                    type="tel"
-                    placeholder="+90 (532) 123 45 67"
+                    id='cellphone'
+                    type='tel'
+                    placeholder='+90 (532) 123 45 67'
                     value={formData.cellphone}
                     onChange={(e) => handleInputChange('cellphone', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="fax">Faks</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='phone2'>Telefon 2</Label>
                   <Input
-                    id="fax"
-                    type="tel"
-                    placeholder="+90 (212) 123 45 69"
+                    id='phone2'
+                    type='tel'
+                    placeholder='+90 (212) 123 45 68'
+                    value={formData.phone2}
+                    onChange={(e) => handleInputChange('phone2', e.target.value)}
+                  />
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor='fax'>Faks</Label>
+                  <Input
+                    id='fax'
+                    type='tel'
+                    placeholder='+90 (212) 123 45 69'
                     value={formData.fax}
                     onChange={(e) => handleInputChange('fax', e.target.value)}
                   />
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          </section>
 
-        {/* Location */}
-        <TabsContent value="location" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <MapPin className="h-5 w-5" />
-                Konum ve Adres Bilgileri
-              </CardTitle>
-              <CardDescription>
-                Adres ve harita koordinatları
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="street">Adres</Label>
+          <Separator />
+
+          <section className='space-y-4'>
+            <div className='flex items-center gap-3'>
+              <div className={cn(
+                'flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors',
+                completedSteps.has('location') ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground'
+              )}>
+                {completedSteps.has('location') ? <Check className='h-3 w-3' /> : <MapPin className='h-3 w-3' />}
+              </div>
+              <div>
+                <h3 className='font-semibold text-lg'>Konum ve Adres</h3>
+                <p className='text-sm text-muted-foreground'>Adres ve harita koordinatları</p>
+              </div>
+            </div>
+            
+            <div className='ml-4 space-y-4 border-l-2 border-muted pl-4'>
+              <div className='space-y-2'>
+                <Label htmlFor='street'>Adres</Label>
                 <Textarea
-                  id="street"
-                  placeholder="Cadde, Sokak, Bina No, Daire"
+                  id='street'
+                  placeholder='Cadde, Sokak, Bina No, Daire'
                   value={formData.address.street}
                   onChange={(e) => handleAddressChange('street', e.target.value)}
                   rows={3}
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="city">İl</Label>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='space-y-2'>
+                  <Label htmlFor='city'>İl</Label>
                   <Input
-                    id="city"
-                    placeholder="İstanbul"
+                    id='city'
+                    placeholder='İstanbul'
                     value={formData.address.city}
                     onChange={(e) => handleAddressChange('city', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="state">İlçe</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='state'>İlçe</Label>
                   <Input
-                    id="state"
-                    placeholder="Kadıköy"
+                    id='state'
+                    placeholder='Kadıköy'
                     value={formData.address.state}
                     onChange={(e) => handleAddressChange('state', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="postal_code">Posta Kodu</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='postal_code'>Posta Kodu</Label>
                   <Input
-                    id="postal_code"
-                    placeholder="34000"
+                    id='postal_code'
+                    placeholder='34000'
                     value={formData.address.postal_code}
                     onChange={(e) => handleAddressChange('postal_code', e.target.value)}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="country">Ülke</Label>
+                <div className='space-y-2'>
+                  <Label htmlFor='country'>Ülke</Label>
                   <Input
-                    id="country"
-                    placeholder="Türkiye"
+                    id='country'
+                    placeholder='Türkiye'
                     value={formData.address.country}
                     onChange={(e) => handleAddressChange('country', e.target.value)}
                   />
                 </div>
-              </div>
 
-              <div className="pt-4 border-t">
-                <h4 className="text-sm font-medium mb-4">Harita Koordinatları</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="lat">Enlem (Latitude)</Label>
-                    <Input
-                      id="lat"
-                      placeholder="41.0082"
-                      value={formData.coordinates.lat}
-                      onChange={(e) => handleCoordinatesChange('lat', e.target.value)}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="lng">Boylam (Longitude)</Label>
-                    <Input
-                      id="lng"
-                      placeholder="28.9784"
-                      value={formData.coordinates.lng}
-                      onChange={(e) => handleCoordinatesChange('lng', e.target.value)}
-                    />
-                  </div>
+                <div className='space-y-2'>
+                  <Label htmlFor='lat'>Enlem (Latitude)</Label>
+                  <Input
+                    id='lat'
+                    placeholder='41.0082'
+                    value={formData.coordinates.lat}
+                    onChange={(e) => handleCoordinatesChange('lat', e.target.value)}
+                  />
                 </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Google Maps&apos;ten koordinat almak için lokasyona sağ tıklayın
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
 
-      {/* Form Actions */}
-      <div className="flex justify-end gap-4">
-        {onCancel && (
-          <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
-            İptal
-          </Button>
-        )}
-        <Button type="submit" disabled={loading}>
-          {loading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Oluşturuluyor...
-            </>
-          ) : (
-            <>
-              <Building2 className="mr-2 h-4 w-4" />
-              Şirketi Oluştur
-            </>
-          )}
-        </Button>
+                <div className='space-y-2'>
+                  <Label htmlFor='lng'>Boylam (Longitude)</Label>
+                  <Input
+                    id='lng'
+                    placeholder='28.9784'
+                    value={formData.coordinates.lng}
+                    onChange={(e) => handleCoordinatesChange('lng', e.target.value)}
+                  />
+                </div>
+              </div>
+              
+              <p className='text-xs text-muted-foreground'>
+                Google Maps&apos;ten koordinat almak için lokasyona sağ tıklayın
+              </p>
+            </div>
+          </section>
+        </div>
+      </ScrollArea>
+
+      <div className='border-t bg-background p-6'>
+        <div className='flex justify-between gap-4'>
+          <div className='flex items-center gap-2 text-sm text-muted-foreground'>
+            <div className='flex gap-1'>
+              {Array.from({ length: 4 }).map((_, i) => {
+                const sections = ['basic', 'legal', 'contact', 'location']
+                return (
+                  <div
+                    key={i}
+                    className={cn(
+                      'h-1.5 w-8 rounded-full transition-colors',
+                      completedSteps.has(sections[i]) ? 'bg-primary' : 'bg-muted'
+                    )}
+                  />
+                )
+              })}
+            </div>
+            <span>{completedSteps.size} / 4 bölüm</span>
+          </div>
+          
+          <div className='flex gap-3'>
+            {onCancel && (
+              <Button type='button' variant='outline' onClick={onCancel} disabled={loading}>
+                İptal
+              </Button>
+            )}
+            <Button type='submit' disabled={loading} size='lg'>
+              {loading ? (
+                <>
+                  <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                  Oluşturuluyor...
+                </>
+              ) : (
+                <>
+                  <Building2 className='mr-2 h-4 w-4' />
+                  Şirketi Oluştur
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
     </form>
   )

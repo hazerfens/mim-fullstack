@@ -1,32 +1,99 @@
 'use client'
 
-import React from 'react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import React, { useState, useEffect } from 'react'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from '@/components/ui/alert-dialog'
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { Edit, Trash2, Users, Shield } from 'lucide-react'
-import { deleteRoleAction, type Role, type Permissions } from '@/features/actions/settings/roles/role-actions'
+import { type Role, updateRoleAction } from '@/features/actions/settings/roles/role-actions'
+import { toast } from 'sonner'
+import { useRolesStore } from '@/stores/roles-store'
+import type { Permissions } from '@/lib/permissions'
 
 interface RoleListProps {
   roles: Role[]
   onEdit: (role: Role) => void
-  onRefresh: () => void
+  onRefresh?: (force?: boolean) => void
 }
 
 export const RoleList: React.FC<RoleListProps> = ({ roles, onEdit, onRefresh }) => {
-  const handleDeleteRole = async (roleId: string) => {
-    if (!confirm('Bu rolü silmek istediğinizden emin misiniz?')) return
-
+  // Subscribe to server-sent role events so active/passive changes are realtime
+  // Subscribe to role SSE and update roles store in place (no full refresh)
+  useEffect(() => {
+    let es: EventSource | null = null
     try {
-      const result = await deleteRoleAction(roleId)
-      if (result.status === 'success') {
-        onRefresh()
-      } else {
-        alert(result.message || 'Rol silinirken hata oluştu')
+      es = new EventSource('/api/events/roles')
+      es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data)
+          if (!data || !data.type) return
+          const rolesState = useRolesStore.getState()
+          const current = rolesState.roles
+          if (data.type === 'role.updated' && data.role) {
+            const incoming = data.role
+            const updated = current.map((r: Role) => (r.id === incoming.id ? incoming as Role : r))
+            rolesState.setRoles(updated)
+          } else if (data.type === 'role.created' && data.role) {
+            const incoming = data.role
+            if (!current.find((r: Role) => r.id === incoming.id)) {
+              rolesState.setRoles([incoming as Role, ...current])
+            }
+          } else if (data.type === 'role.deleted' && data.roleId) {
+            rolesState.setRoles(current.filter((r: Role) => r.id !== data.roleId))
+          }
+        } catch { }
       }
+    } catch {
+      // ignore
+    }
+    return () => { if (es) es.close() }
+  }, [])
+
+  const [deletingRole, setDeletingRole] = useState<Role | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  useBlockFormSubmit(!!deletingRole)
+
+  const handleDeleteRole = async (roleId: string) => {
+    setIsDeleting(true)
+    try {
+      const res = await fetch(`/api/roles/${roleId}`, { method: 'DELETE', credentials: 'include' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.status !== 'success') {
+        // Specific handling for conflict: role is assigned to users
+        if (res.status === 409) {
+          toast.error(data.message || 'Rol kullanıcıya atandığı için silinemiyor')
+          // keep the confirmation modal open so user can cancel or inspect
+          setIsDeleting(false)
+          return
+        }
+
+        toast.error(data.message || 'Rol silinirken hata oluştu')
+        setIsDeleting(false)
+        setDeletingRole(null)
+        return
+      }
+
+      toast.success('Rol başarıyla silindi')
+      onRefresh?.(true)
+      // successful deletion -> close modal
+      setIsDeleting(false)
+      setDeletingRole(null)
     } catch (error) {
       console.error('Delete role error:', error)
-      alert('Rol silinirken hata oluştu')
+      toast.error('Rol silinirken hata oluştu')
+      setIsDeleting(false)
+      setDeletingRole(null)
     }
   }
 
@@ -44,55 +111,128 @@ export const RoleList: React.FC<RoleListProps> = ({ roles, onEdit, onRefresh }) 
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-      {roles.map((role) => (
-        <Card key={role.id} className="relative">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Shield className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg">{role.description}</CardTitle>
-              </div>
-              <Badge variant={role.is_active ? "default" : "secondary"}>
-                {role.is_active ? 'Aktif' : 'Pasif'}
-              </Badge>
-            </div>
-            <CardDescription>{role.name}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Users className="h-4 w-4" />
-              <span>{getPermissionCount(role.permissions)} izin</span>
-            </div>
-
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onEdit(role)}
-                className="flex-1"
-              >
-                <Edit className="h-4 w-4 mr-2" />
-                Düzenle
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleDeleteRole(role.id)}
-                className="text-destructive hover:text-destructive"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
-
-      {roles.length === 0 && (
-        <div className="col-span-full text-center py-8 text-muted-foreground">
-          Henüz hiç rol oluşturulmamış
-        </div>
+    <div>
+      {roles.length === 0 ? (
+        <div className="text-center py-8 text-muted-foreground">Henüz hiç rol oluşturulmamış</div>
+      ) : (
+        <Accordion type="single" collapsible className="w-full">
+          {roles.map((role) => (
+            <AccordionItem key={role.id ?? role.name} value={role.id ?? role.name}>
+              <AccordionTrigger className="hover:no-underline cursor-pointer">
+                <div className="flex items-center gap-3 w-full">
+                  <Shield className="h-5 w-5 text-primary flex-shrink-0" />
+                  <div className="flex items-center justify-between flex-1 text-left">
+                    <div>
+                      <span className="font-semibold">{role.description}</span>
+                      <span className="text-sm text-muted-foreground ml-3">{role.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={role.is_active ? 'default' : 'secondary'} className="mr-2">
+                        {role.is_active ? 'Aktif' : 'Pasif'}
+                      </Badge>
+                      <Switch checked={!!role.is_active} onCheckedChange={async (v: boolean) => {
+                        const rolesState = useRolesStore.getState()
+                        const previous = rolesState.roles
+                        const updatedList = previous.map((r: Role) => (r.id === role.id ? { ...r, is_active: v } : r))
+                        rolesState.setRoles(updatedList)
+                        try {
+                          const res = await updateRoleAction(role.id, { is_active: v }, role.company_id ?? undefined)
+                          if (res.status !== 'success') {
+                            toast.error('Durum güncellenemedi', { description: res.message })
+                            rolesState.setRoles(previous)
+                          } else {
+                            toast.success(v ? 'Rol aktifleştirildi' : 'Rol pasifleştirildi')
+                          }
+                        } catch (err) {
+                          console.error('Toggle role active error', err)
+                          toast.error('Durum güncellemesi sırasında hata oluştu')
+                          rolesState.setRoles(previous)
+                        }
+                      }} />
+                    </div>
+                  </div>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="px-2 py-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Users className="h-4 w-4" />
+                        <span>{getPermissionCount(role.permissions)} izin</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); onEdit(role) }}
+                      >
+                        <Edit className="h-4 w-4 mr-2" />
+                        Düzenle
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setDeletingRole(role) }}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
       )}
+
+      {/* Confirmation modal for deleting roles */}
+      <AlertDialog open={!!deletingRole} onOpenChange={(open) => { if (!open) setDeletingRole(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rolü sil</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingRole ? `${deletingRole.description} (${deletingRole.name}) rolünü silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.` : 'Rolü silmek istediğinizden emin misiniz?'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+              <AlertDialogCancel type="button">Vazgeç</AlertDialogCancel>
+              <AlertDialogAction
+                type="button"
+                onClick={(e: React.MouseEvent) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (deletingRole) {
+                    handleDeleteRole(deletingRole.id)
+                  }
+                }}
+                disabled={isDeleting}
+              >
+                {isDeleting ? 'Siliniyor...' : 'Sil'}
+              </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
+}
+
+// When confirmation dialog is open, block any form submit events that might come from
+// ancestor forms (prevents accidental full page reloads caused by submit bubbling).
+// We attach a capturing listener while the dialog is open and remove it afterwards.
+function useBlockFormSubmit(shouldBlock: boolean) {
+  useEffect(() => {
+    if (!shouldBlock) return
+    const handler = (e: Event) => {
+      // prevent any submit default behavior on the document
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    document.addEventListener('submit', handler, true)
+    return () => document.removeEventListener('submit', handler, true)
+  }, [shouldBlock])
 }

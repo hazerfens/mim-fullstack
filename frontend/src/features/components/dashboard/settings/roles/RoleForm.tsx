@@ -9,12 +9,15 @@ import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Shield, Check, X, Loader2 } from 'lucide-react'
-import { createRoleAction, updateRoleAction, type Role, type Permissions, type PermissionDetail } from '@/features/actions/settings/roles/role-actions'
+import { updateRoleAction, type Role } from '@/features/actions/settings/roles/role-actions'
+import type { Permissions, PermissionDetail } from '@/lib/permissions'
+import { useRolesStore } from '@/stores/roles-store'
 import { toast } from 'sonner'
 
 interface RoleFormProps {
   role: Role | null
   onClose: () => void
+  companyId?: string | undefined
 }
 
 const permissionResources = [
@@ -51,7 +54,7 @@ const actionLabels: Record<string, string> = {
   delete: 'Sil',
 }
 
-export const RoleForm: React.FC<RoleFormProps> = ({ role, onClose }) => {
+export const RoleForm: React.FC<RoleFormProps> = ({ role, onClose, companyId }) => {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [formData, setFormData] = useState({
     name: '',
@@ -102,19 +105,57 @@ export const RoleForm: React.FC<RoleFormProps> = ({ role, onClose }) => {
     }))
   }
 
+  const setRoles = useRolesStore((s) => s.setRoles)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSubmitting(true)
 
     try {
       if (role) {
-        await updateRoleAction(role.id, formData)
-        toast.success('✅ Rol başarıyla güncellendi')
+        const result = await updateRoleAction(role.id, formData, companyId)
+        if (result.status === 'success' && result.role) {
+          // Update local store to reflect the change immediately without a full refetch.
+          const current = useRolesStore.getState().roles || []
+          const updated = current.map((r) => (r.id === result.role.id ? result.role : r))
+          // If the role isn't present (rare), append it.
+          if (!updated.find((r) => r.id === result.role.id)) updated.push(result.role)
+          setRoles(updated)
+          toast.success('✅ Rol başarıyla güncellendi')
+        } else {
+          toast.error('❌ Rol güncellenemedi', { description: result.message })
+        }
       } else {
-        await createRoleAction(formData)
+        // Use client-side API proxy to create role to avoid server action hard redirects
+        const res = await fetch('/api/roles/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ companyId, role: formData }),
+          credentials: 'include',
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || data.status !== 'success') {
+          toast.error('❌ Rol oluşturulamadı', { description: data.message || 'Bilinmeyen hata' })
+          setIsSubmitting(false)
+          return
+        }
+        // Add created role directly into the store so we don't need a forced refetch
+        const createdRole = data.role
+        if (createdRole) {
+          const current = useRolesStore.getState().roles || []
+          // Prefer company-scoped role; if duplicate name exists replace it
+          const existsIdx = current.findIndex((r) => r.name === createdRole.name && (r.company_id || null) !== companyId)
+          if (existsIdx >= 0) {
+            current[existsIdx] = createdRole
+            setRoles([...current])
+          } else {
+            setRoles([...current, createdRole])
+          }
+        }
         toast.success('✅ Rol başarıyla oluşturuldu')
       }
       onClose()
+      // No full refetch necessary because we updated the client store optimistically.
     } catch (error) {
       console.error('Error submitting role:', error)
       toast.error(role ? '❌ Rol güncellenemedi' : '❌ Rol oluşturulamadı')

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import { SessionProvider } from "@/components/providers/session-provider";
+import { getAllCompaniesForAdminAction } from '@/features/actions/company-action';
 import { getCurrentUserAction } from "@/features/actions/auth-action";
 
 const geistSans = Geist({
@@ -30,12 +31,20 @@ export default async function RootLayout({
   
   const initialUser = status === "success" ? user : null;
 
+  // Do not fetch companies server-side here. We prefer client-side persisted
+  // company data (localStorage) and client fetches on demand to avoid
+  // unnecessary server-side calls immediately after login.
+  const initialCompanies = null;
+  const initialActiveCompany = null;
+
   return (
     <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        <SessionProvider initialUser={initialUser}>
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <SessionProvider
+          initialUser={initialUser}
+          initialCompanies={initialCompanies}
+          initialActiveCompany={initialActiveCompany}
+        >
           {children}
         </SessionProvider>
         <Toaster position="bottom-right" richColors={false} />

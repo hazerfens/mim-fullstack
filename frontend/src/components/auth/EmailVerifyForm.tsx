@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import InlineAlert from '@/components/ui/inline-alert'
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
 
 export const EmailVerifyForm: React.FC = () => {
@@ -82,23 +82,25 @@ export const EmailVerifyForm: React.FC = () => {
           )}
 
           {status === 'success' && (
-            <Alert className="border-green-200 bg-green-50">
-              <CheckCircle className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-green-800">
-                {message}
-                <br />
-                <span className="text-sm">3 saniye içinde giriş sayfasına yönlendirileceksiniz...</span>
-              </AlertDescription>
-            </Alert>
+            <InlineAlert
+              className="border-green-200 bg-green-50"
+              icon={<CheckCircle className="h-4 w-4 text-green-600" />}
+              description={
+                <>
+                  {message}
+                  <br />
+                  <span className="text-sm">3 saniye içinde giriş sayfasına yönlendirileceksiniz...</span>
+                </>
+              }
+            />
           )}
 
           {status === 'error' && (
-            <Alert variant="destructive">
-              <XCircle className="h-4 w-4" />
-              <AlertDescription>
-                {message}
-              </AlertDescription>
-            </Alert>
+            <InlineAlert
+              variant="destructive"
+              icon={<XCircle className="h-4 w-4" />}
+              description={message}
+            />
           )}
 
           {status === 'error' && (

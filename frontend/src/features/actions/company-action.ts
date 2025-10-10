@@ -1,6 +1,8 @@
-'use server';
+ 'use server';
 
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ||
@@ -26,7 +28,8 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 }
 
 export interface CreateCompanyData {
-  title?: string;
+  unvani?: string;
+  adi?: string;
   name?: string;
   slug?: string;
   logo?: string | null;
@@ -43,8 +46,21 @@ export interface CreateCompanyData {
   cellphone?: string | null;
   url?: string | null;
   address?: Record<string, string> | null;
-  coordinates?: { lat: string; lng: string } | null;
+  coordinates?: { lat: number; lng: number } | null;
   workinghours?: Record<string, unknown> | null;
+}
+
+// Minimal Company type used by frontend
+
+      // Revalidation will be performed below after successful delete.
+
+export interface Company {
+  id: string;
+  name?: string | null;
+  adi?: string | null;
+  unvani?: string | null;
+  slug?: string | null;
+  is_active?: boolean;
 }
 
 /**
@@ -142,6 +158,21 @@ export async function getUserCompaniesAction() {
  * Get active company (Server Action)
  */
 export async function getActiveCompanyAction() {
+  const cookieStore = await cookies();
+  // Prefer server-provided snapshot to avoid an extra backend request
+  // during server renders (set during login/refresh flows).
+  try {
+    const initialActive = cookieStore.get('initialActiveCompany')?.value ?? null;
+    if (initialActive) {
+      try {
+        const parsed = JSON.parse(initialActive);
+        return { status: 'success' as const, data: parsed };
+      } catch {
+        // fall through to normal fetch if parsing fails
+      }
+    }
+  } catch {}
+
   const token = await getAccessToken();
   
   if (!token) {
@@ -187,6 +218,229 @@ export async function getActiveCompanyAction() {
       statusCode: 500,
     };
   }
+}
+
+/**
+ * Get all active companies (admin only)
+ */
+export async function getAllCompaniesForAdminAction() {
+  const token = await getAccessToken();
+  if (!token) {
+    return { status: 'error' as const, message: 'Oturum bulunamadı', statusCode: 401 };
+  }
+
+  try {
+    const response = await fetch(`${backendApiUrl}/admin/companies`, {
+      method: 'GET',
+      headers: await getAuthHeaders(),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      return { status: 'error' as const, message: 'Şirketler yüklenemedi', statusCode: response.status };
+    }
+
+    const companies = await response.json();
+    return { status: 'success' as const, data: companies };
+  } catch (error) {
+    console.error('Get all companies (admin) error:', error);
+    return { status: 'error' as const, message: 'Bir hata oluştu', statusCode: 500 };
+  }
+}
+
+/**
+ * Update an existing company (Server Action)
+ */
+export async function updateCompanyAction(companyId: string, data: Partial<CreateCompanyData & { adi?: string; unvani?: string }>) {
+  const token = await getAccessToken();
+  if (!token) {
+    return { status: 'error' as const, message: 'Oturum bulunamadı', statusCode: 401 };
+  }
+
+  try {
+    const response = await fetch(`${backendApiUrl}/company/${companyId}`, {
+      method: 'PUT',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify(data),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error' as const, message: err.error || 'Şirket güncellenemedi', statusCode: response.status };
+    }
+
+    return { status: 'success' as const, message: 'Şirket güncellendi' };
+  } catch (error) {
+    console.error('Update company error:', error);
+    return { status: 'error' as const, message: 'Bir hata oluştu', statusCode: 500 };
+  }
+}
+
+/**
+ * Delete a company (Server Action)
+ */
+export async function deleteCompanyAction(companyId: string) {
+  const token = await getAccessToken();
+  if (!token) {
+    return { status: 'error' as const, message: 'Oturum bulunamadı', statusCode: 401 };
+  }
+
+  try {
+    const response = await fetch(`${backendApiUrl}/company/${companyId}`, {
+      method: 'DELETE',
+      headers: await getAuthHeaders(),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error' as const, message: err.error || 'Şirket silinemedi', statusCode: response.status };
+    }
+
+    // Revalidate server-side caches so pages show updated state
+    try {
+      revalidatePath('/');
+      revalidatePath('/dashboard');
+    } catch {
+      /* ignore revalidate errors */
+    }
+
+    return { status: 'success' as const, message: 'Şirket silindi' };
+  } catch (error) {
+    console.error('Delete company error:', error);
+    return { status: 'error' as const, message: 'Bir hata oluştu', statusCode: 500 };
+  }
+}
+
+/**
+ * Permanently delete a company (Server Action) - expects a FormData with companyId
+ */
+export async function deleteCompanyPermanentAction(formData: FormData): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) {
+    // If no session, redirect to login
+    redirect('/auth/login');
+  }
+
+  const companyId = formData.get('companyId')?.toString();
+  if (!companyId) {
+    throw new Error('Company ID missing');
+  }
+
+  try {
+    const response = await fetch(`${backendApiUrl}/company/${companyId}/permanent`, {
+      method: 'DELETE',
+      headers: await getAuthHeaders(),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+      // Throw so Next.js error overlay or error boundary can catch it
+      throw new Error(err.error || 'Şirket kalıcı olarak silinemedi');
+    }
+
+    // Revalidate and redirect to homepage; client will clear store when it sees the flag
+    try {
+      revalidatePath('/');
+      revalidatePath('/dashboard');
+    } catch {
+      /* ignore */
+    }
+    redirect('/?company_cleared=1');
+  } catch (error) {
+    console.error('Permanent delete company error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Toggle company active state (Server Action)
+ * Expects FormData with companyId and isActive
+ */
+export async function toggleCompanyActiveAction(formData: FormData): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) {
+    redirect('/auth/login');
+  }
+
+  const companyId = formData.get('companyId')?.toString();
+  const isActiveStr = formData.get('isActive')?.toString();
+  if (!companyId || typeof isActiveStr === 'undefined' || isActiveStr === null) {
+    throw new Error('Invalid form data');
+  }
+
+  const isActive = isActiveStr === 'true';
+
+  try {
+    const response = await fetch(`${backendApiUrl}/company/${companyId}`, {
+      method: 'PUT',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ is_active: isActive }),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(err.error || 'Şirket durumu güncellenemedi');
+    }
+
+    // Refresh to reflect new state
+    redirect('/dashboard/company/settings');
+  } catch (error) {
+    console.error('Toggle company active error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Soft delete a company (server action form)
+ */
+export async function deleteCompanySoftAction(formData: FormData): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) redirect('/auth/login');
+
+  const companyId = formData.get('companyId')?.toString();
+  if (!companyId) throw new Error('Company ID missing');
+
+  try {
+    const response = await fetch(`${backendApiUrl}/company/${companyId}`, {
+      method: 'DELETE',
+      headers: await getAuthHeaders(),
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(err.error || 'Şirket silinemedi');
+    }
+
+    try {
+      revalidatePath('/');
+      revalidatePath('/dashboard');
+    } catch {
+      /* ignore */
+    }
+    // Redirect to homepage and indicate client should clear company-store
+    redirect('/?company_cleared=1');
+  } catch (error) {
+    console.error('Soft delete company error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Export company data to JSON (server action form)
+ */
+export async function exportCompanyDataAction(formData: FormData): Promise<void> {
+  const companyId = formData.get('companyId')?.toString();
+  if (!companyId) throw new Error('Company ID missing');
+
+  const models = formData.getAll('models') as string[];
+  const modelsParam = models && models.length > 0 ? `&models=${encodeURIComponent(models.join(','))}` : '';
+  // Redirect to API route that will perform the export with server-side auth and stream the JSON
+  redirect(`/api/company/settings/export?companyId=${encodeURIComponent(companyId)}${modelsParam}`);
 }
 
 /**

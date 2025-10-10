@@ -204,7 +204,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
               <div className="text-center py-8 border-2 border-dashed rounded-lg">
                 <Shield className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground mb-4">Henüz özel izin tanımlanmamış</p>
-                <Button onClick={() => setShowAddForm(true)}>
+                <Button type="button" onClick={() => setShowAddForm(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   İlk İzni Ekle
                 </Button>
@@ -262,6 +262,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
                           </div>
 
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => handleDeletePermission(permission.id)}
@@ -280,7 +281,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
 
                 {/* Add New Permission Form */}
                 {!showAddForm ? (
-                  <Button onClick={() => setShowAddForm(true)} variant="outline" className="w-full">
+                  <Button type="button" onClick={() => setShowAddForm(true)} variant="outline" className="w-full">
                     <Plus className="h-4 w-4 mr-2" />
                     Yeni İzin Ekle
                   </Button>
@@ -289,6 +290,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
                     <div className="flex items-center justify-between">
                       <h3 className="font-semibold">Yeni İzin Ekle</h3>
                       <Button
+                        type="button"
                         variant="ghost"
                         size="sm"
                         onClick={() => {
@@ -450,7 +452,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
                       )}
                     </div>
 
-                    <Button onClick={handleAddPermission} disabled={saving} className="w-full">
+                    <Button type="button" onClick={handleAddPermission} disabled={saving} className="w-full">
                       {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                       İzni Kaydet
                     </Button>
@@ -462,7 +464,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
         </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button type="button" variant="outline" onClick={onClose}>
             Kapat
           </Button>
         </DialogFooter>

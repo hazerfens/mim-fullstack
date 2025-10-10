@@ -2,10 +2,10 @@
 
 import * as React from "react"
 import { ChevronsUpDown, Plus, Building2, Check, Loader2 } from "lucide-react"
-import { useCompanyStore, useActiveCompany, useCompanies } from "@/stores/company-store"
+import { useCompanyStore } from "@/stores/company-store"
 import { toast } from "sonner"
 import Image from "next/image"
-import { getAccessToken } from "@/lib/auth-utils"
+import { useRouter } from "next/navigation"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { useUser } from '@/hooks/use-session'
 import {
   SidebarMenu,
   SidebarMenuButton,
@@ -28,40 +29,63 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { CreateCompanyForm } from "@/features/components/dashboard/settings/company/CreateCompanyForm"
+import { CreateCompanyForm } from "./settings/company/CreateCompanyForm"
+
 
 export function TeamSwitcher() {
   const { isMobile } = useSidebar()
-  const companies = useCompanies()
-  const activeCompany = useActiveCompany()
-  const { fetchCompanies, fetchActiveCompany, switchCompany, loading } = useCompanyStore()
+  const router = useRouter()
+  const {
+    companies,
+    activeCompany,
+    fetchCompanies,
+    fetchActiveCompany,
+    switchCompany,
+    isLoading,
+  } = useCompanyStore()
+
+  const user = useUser()
   
   const [switching, setSwitching] = React.useState(false)
   const [showCreateDialog, setShowCreateDialog] = React.useState(false)
 
-  // Fetch companies on mount
+  // Fetch companies on mount. Only fetch active company if store not initialized
   React.useEffect(() => {
-    const token = getAccessToken()
-    if (token) {
-      fetchCompanies(token)
-      fetchActiveCompany(token)
+    // Only fetch companies if we don't already have them
+    if (companies.length === 0) {
+      fetchCompanies()
     }
-  }, [fetchCompanies, fetchActiveCompany])
+    if (!(useCompanyStore.getState().initialized)) {
+      fetchActiveCompany()
+    }
+  }, [fetchCompanies, fetchActiveCompany, companies.length])
 
   const handleSwitchCompany = async (companyId: string) => {
-    const token = getAccessToken()
-    if (!token || switching) return
+    if (switching) return
     
     setSwitching(true)
     try {
-      await switchCompany(token, companyId)
-      const company = companies.find(c => c.id === companyId)
-      toast.success('Şirket değiştirildi', {
-        description: `${company?.adi || company?.unvani || 'Şirket'} aktif edildi`
-      })
-      
-      // Reload the page to refresh company-specific data
-      window.location.reload()
+      const res = await switchCompany(companyId)
+      if (res.ok) {
+        // Fetch confirmed active company from server and set it in store
+  await fetchActiveCompany()
+        const company = companies.find((c: { id: string }) => c.id === companyId)
+        toast.success('Şirket değiştirildi', {
+          description: `${company?.name || company?.unvani || 'Şirket'} aktif edildi`
+        })
+        // Refresh using Next.js router instead of full page reload
+        router.refresh()
+      } else {
+        if (res.statusCode === 403) {
+          toast.error(res.message || 'Bu şirkete erişiminiz yok');
+          // Refresh company list to remove inaccessible entries
+          await fetchCompanies();
+          await fetchActiveCompany();
+          router.refresh();
+        } else {
+          toast.error(res.message || 'Şirket değiştirme başarısız oldu');
+        }
+      }
     } catch (error) {
       toast.error('Hata', {
         description: error instanceof Error ? error.message : 'Şirket değiştirilemedi'
@@ -72,57 +96,43 @@ export function TeamSwitcher() {
   }
 
   const handleCreateSuccess = async () => {
-    const token = getAccessToken()
     setShowCreateDialog(false)
     
-    if (token) {
-      // Refresh companies list
-      await fetchCompanies(token)
-      await fetchActiveCompany(token)
-    }
+  // Refresh companies list and force refresh active company (we just created one)
+  await fetchCompanies()
+  await fetchActiveCompany(true)
     
-    // Reload to update company context
-    window.location.reload()
+    // Refresh using Next.js router instead of full page reload
+    router.refresh()
   }
 
-  // If no active company and no companies, show create prompt
-  if (!activeCompany && companies.length === 0 && !loading) {
+  // If no active company and no companies, show create prompt OR no permission message
+  // If the current user is a system admin and there is no active company,
+  // hide the TeamSwitcher (admins see system dashboard instead)
+  if (!activeCompany && (user?.role === 'super_admin' || user?.role === 'admin')) {
+    return null
+  }
+
+  if (!activeCompany && companies.length === 0 && !isLoading) {
     return (
       <SidebarMenu>
         <SidebarMenuItem>
-          <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-            <DialogTrigger asChild>
-              <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <Building2 className="size-4" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Şirket Oluştur</span>
-                  <span className="truncate text-xs text-muted-foreground">İlk şirketinizi oluşturun</span>
-                </div>
-                <Plus className="ml-auto" />
-              </SidebarMenuButton>
-            </DialogTrigger>
-            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Yeni Şirket Oluştur</DialogTitle>
-                <DialogDescription>
-                  İlk şirketinizi oluşturarak başlayın
-                </DialogDescription>
-              </DialogHeader>
-              <CreateCompanyForm 
-                onSuccess={handleCreateSuccess}
-                onCancel={() => setShowCreateDialog(false)}
-              />
-            </DialogContent>
-          </Dialog>
+          <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent cursor-default">
+            <div className="bg-muted text-muted-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
+              <Building2 className="size-4" />
+            </div>
+            <div className="grid flex-1 text-left text-sm leading-tight">
+              <span className="truncate font-medium text-muted-foreground">Yetkisiz Erişim</span>
+              <span className="truncate text-xs text-muted-foreground">Şirket yetkiniz bulunmamaktadır</span>
+            </div>
+          </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
     )
   }
 
   // Loading state
-  if (loading && !activeCompany) {
+  if (isLoading && !activeCompany) {
     return (
       <SidebarMenu>
         <SidebarMenuItem>
@@ -149,19 +159,27 @@ export function TeamSwitcher() {
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
               disabled={switching}
             >
-              <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
+              <div className="text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg overflow-hidden">
                 {switching ? (
                   <Loader2 className="size-4 animate-spin" />
+                ) : activeCompany?.logo ? (
+                  <Image 
+                    src={activeCompany.logo} 
+                    alt={activeCompany.name || activeCompany.unvani || ''} 
+                    width={32}
+                    height={32}
+                    className="size-8 object-contain" 
+                  />
                 ) : (
                   <Building2 className="size-4" />
                 )}
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">
-                  {activeCompany?.adi || activeCompany?.unvani || 'Şirket Seçin'}
+                  {activeCompany?.name || activeCompany?.unvani || 'Şirket Seçin'}
                 </span>
                 <span className="truncate text-xs capitalize">
-                  {activeCompany?.plan_type || 'free'} plan
+                  Aktif Şirket
                 </span>
               </div>
               <ChevronsUpDown className="ml-auto" />
@@ -174,9 +192,9 @@ export function TeamSwitcher() {
             sideOffset={4}
           >
             <DropdownMenuLabel className="text-muted-foreground text-xs">
-              Şirketlerim
+              Companies
             </DropdownMenuLabel>
-            {companies.map((company) => (
+            {companies.map((company: { id: string; logo?: string; name?: string; unvani?: string }) => (
               <DropdownMenuItem
                 key={company.id}
                 onClick={() => handleSwitchCompany(company.id)}
@@ -187,7 +205,7 @@ export function TeamSwitcher() {
                   {company.logo ? (
                     <Image 
                       src={company.logo} 
-                      alt={company.adi || company.unvani || ''} 
+                      alt={company.name || company.unvani || ''} 
                       width={16}
                       height={16}
                       className="size-4 object-contain" 
@@ -197,7 +215,7 @@ export function TeamSwitcher() {
                   )}
                 </div>
                 <div className="flex-1 truncate">
-                  {company.adi || company.unvani || 'İsimsiz Şirket'}
+                  {company.name || company.unvani || 'İsimsiz Şirket'}
                 </div>
                 {activeCompany?.id === company.id && (
                   <Check className="ml-auto size-4" />
@@ -207,18 +225,18 @@ export function TeamSwitcher() {
             <DropdownMenuSeparator />
             <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
               <DialogTrigger asChild>
-                <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="gap-2 p-2">
+                <DropdownMenuItem key="create-new-company" onSelect={(e) => e.preventDefault()} className="gap-2 p-2">
                   <div className="flex size-6 items-center justify-center rounded-md border bg-transparent">
                     <Plus className="size-4" />
                   </div>
                   <div className="text-muted-foreground font-medium">Yeni Şirket</div>
                 </DropdownMenuItem>
               </DialogTrigger>
-              <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>Yeni Şirket Oluştur</DialogTitle>
+              <DialogContent className="min-w-6xl w-[95vw] max-h-[95vh] p-0 gap-0 overflow-hidden">
+                <DialogHeader className="px-6 pt-6 pb-4">
+                  <DialogTitle className="text-2xl">Yeni Şirket Oluştur</DialogTitle>
                   <DialogDescription>
-                    Yeni bir şirket hesabı oluşturun
+                    Şirket bilgilerinizi girin ve hızlıca başlayın
                   </DialogDescription>
                 </DialogHeader>
                 <CreateCompanyForm 

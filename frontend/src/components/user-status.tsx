@@ -2,22 +2,27 @@
 
 import { useSession } from "@/components/providers/session-provider";
 import { Button } from "@/components/ui/button";
-import { logoutAction } from "@/features/actions/auth-action";
 import { useRouter } from "next/navigation";
-import { clearClientSession } from "@/lib/session-helpers";
+import { useLogoutClient } from '@/stores/session-store';
+import { useCompanyStore } from '@/stores/company-store';
 
 export function UserStatus() {
   const { user, isLoading, refreshSession } = useSession();
   const router = useRouter();
+  const logoutClient = useLogoutClient();
+  const { clearCompanies } = useCompanyStore();
 
   const handleLogout = async () => {
     try {
-      await logoutAction();
-      clearClientSession(); // Zustand store'u temizle
-      router.push('/');
-      router.refresh();
+      const res = await logoutClient();
+      if (res.status !== 'success') {
+        console.error('Logout failed', res.message);
+        return;
+      }
+      clearCompanies();
+      router.replace('/auth/login');
     } catch (error) {
-      console.error("Logout error", error);
+      console.error('Logout error', error);
     }
   };
 

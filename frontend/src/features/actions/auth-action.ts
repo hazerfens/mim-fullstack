@@ -20,6 +20,10 @@ const trimTrailingSlash = (value: string) => value.replace(/\/$/, '');
 const backendAuthUrl = `${trimTrailingSlash(BACKEND_ORIGIN)}/auth`;
 const backendApiAuthUrl = `${trimTrailingSlash(BACKEND_API_BASE)}/auth`;
 
+// Simple in-memory cache for getCurrentUserAction() deduplication.
+// Keyed by access_token string with a short TTL to avoid cross-request staleness.
+const getCurrentUserCache = new Map<string, { res: GetCurrentUserResult; ts: number }>();
+
 // Token helper functions (Server Actions)
 export async function getAccessToken(): Promise<string | null> {
   const cookieStore = await cookies();
@@ -153,9 +157,10 @@ export async function logoutAction() {
       });
     }
 
-    // Cookie'leri sil
-    cookieStore.delete('access_token');
-    cookieStore.delete('refresh_token');
+  // Cookie'leri sil
+  cookieStore.delete('access_token');
+  cookieStore.delete('refresh_token');
+  cookieStore.delete('initialUser');
 
     return { status: 'success', message: 'Çıkış başarılı.' };
   } catch (error) {
@@ -173,7 +178,31 @@ type GetCurrentUserResult =
 
 export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
   const cookieStore = await cookies();
+  // If server has an HttpOnly `initialUser` snapshot, use it as a cheap
+  // source of truth to avoid making an extra backend request on every
+  // server render. This is intentionally minimal and treated as a hint.
+  try {
+    const initialUserCookie = cookieStore.get('initialUser')?.value ?? null;
+    if (initialUserCookie) {
+      const parsed = JSON.parse(initialUserCookie);
+      return { status: 'success', user: parsed as User };
+    }
+  } catch {}
   const accessToken = cookieStore.get('access_token')?.value ?? null;
+
+  // Lightweight in-memory cache keyed by access token to dedupe repeated
+  // server-side calls that happen during the same request/render. TTL is
+  // intentionally short to avoid long-lived cache staleness.
+  const TTL = 2000; // milliseconds
+  try {
+    if (accessToken) {
+      const cached = getCurrentUserCache.get(accessToken);
+      const now = Date.now();
+      if (cached && now - cached.ts < TTL) {
+        return cached.res;
+      }
+    }
+  } catch {}
 
   const fetchUser = async (): Promise<User | 'unauthorized' | null> => {
     if (!accessToken) {
@@ -209,9 +238,19 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
   const user = await fetchUser();
 
   if (user && user !== 'unauthorized') {
+    if (accessToken) {
+      try {
+        getCurrentUserCache.set(accessToken, { res: { status: 'success', user }, ts: Date.now() });
+      } catch {}
+    }
     return { status: 'success', user };
   }
-
+  if (accessToken) {
+    try {
+      // Cache negative or error outcomes briefly as well to avoid storms
+      getCurrentUserCache.set(accessToken, { res: { status: 'unauthenticated', user: null }, ts: Date.now() });
+    } catch {}
+  }
   return accessToken ? { status: 'error', user: null } : { status: 'unauthenticated', user: null };
 }
 

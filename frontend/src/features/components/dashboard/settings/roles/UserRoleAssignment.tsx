@@ -4,48 +4,69 @@ import React, { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
-import { RefreshCw, UserCheck, Search, Settings, ChevronDown, ChevronRight } from 'lucide-react'
-import { useRolesStore, useRoles } from '@/stores/roles-store'
-import { getUsersAction, assignRoleToUserAction, type User } from '@/features/actions/settings/roles/role-actions'
+import { RefreshCw, UserCheck, Search, ChevronDown, ChevronRight, Trash } from 'lucide-react'
+import { useRolesStore } from '@/stores/roles-store'
+import { getUsersAction, type User } from '@/features/actions/settings/roles/role-actions'
+import { getCompanyMembers, removeMember, type CompanyMember } from '@/features/actions/company-member-action'
 import { toast } from 'sonner'
-import { UserPermissionsModal } from './UserPermissionsModal'
+// UserPermissionsModal moved to Users list
+import OrphanedMembersModal from '@/features/components/company/OrphanedMembersModal'
 import { UserPermissionDetails } from './UserPermissionDetails'
 
 interface UserRoleAssignmentProps {
   onUpdate: () => void
+  companyId?: string | undefined
+  onlyOrphaned?: boolean
 }
 
-export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate }) => {
+export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate, companyId, onlyOrphaned = false }) => {
   const [users, setUsers] = useState<User[]>([])
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedUser, setSelectedUser] = useState<User | null>(null)
-  const [showPermissionsModal, setShowPermissionsModal] = useState(false)
+  // role assignment and permission editing moved to Users page
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null)
-  const roles = useRoles();
   const fetchRolesFromStore = useRolesStore((state) => state.fetchRoles);
   
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
+  const [orphanOpen, setOrphanOpen] = useState(false)
 
-  useEffect(() => {
-    fetchUsers()
-    fetchRolesFromStore()
-  }, [fetchRolesFromStore])
-
-  const fetchUsers = async () => {
+  const fetchUsers = React.useCallback(async () => {
     setLoading(true)
     try {
-      const result = await getUsersAction()
-      if (result.status === 'success') {
-        setUsers(result.users)
+      if (companyId) {
+        const companyResult = await getCompanyMembers(companyId)
+        if (companyResult.success && companyResult.data) {
+          const mapped = companyResult.data.map((m: CompanyMember) => ({
+            id: m.user?.id || m.user_id,
+            member_id: m.id,
+            email: m.user?.email || '',
+            first_name: m.user?.full_name || '',
+            last_name: '',
+            role_id: m.role?.id || m.role_id,
+            role_name: m.role?.name,
+            is_active: m.is_active,
+            image_url: m.user?.image_url || undefined,
+            created_at: m.created_at || '',
+            // mark orphaned members (no user record)
+            is_orphaned: m.user_exists === false || m.user == null,
+            // Keep original member id for delete actions
+          })) as User[] & { is_orphaned?: boolean; member_id?: string }[]
+          setUsers(mapped)
+        } else {
+          toast.error('Üyeler yüklenemedi', { description: companyResult.error })
+        }
       } else {
-        toast.error('Kullanıcılar yüklenemedi', {
-          description: result.message
-        })
+        const result = await getUsersAction()
+        if (result.status === 'success') {
+          setUsers(result.users)
+        } else {
+          toast.error('Kullanıcılar yüklenemedi', {
+            description: result.message
+          })
+        }
       }
     } catch (error) {
       console.error('Fetch users error:', error)
@@ -55,33 +76,16 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
     } finally {
       setLoading(false)
     }
-  }
+  }, [companyId])
 
-  const assignRoleToUser = async (userId: string, roleId: string, userName: string) => {
-    setSaving(userId)
-    try {
-      const result = await assignRoleToUserAction(userId, roleId)
-      if (result.status === 'success') {
-        const role = roles.find(r => r.id === roleId)
-        toast.success('Rol atandı', {
-          description: `${userName} kullanıcısına ${role?.name} rolü atandı`
-        })
-        await fetchUsers()
-        onUpdate()
-      } else {
-        toast.error('Rol atanamadı', {
-          description: result.message || 'Bilinmeyen hata'
-        })
-      }
-    } catch (error) {
-      console.error('Assign role error:', error)
-      toast.error('Hata', {
-        description: 'Rol atama sırasında hata oluştu'
-      })
-    } finally {
-      setSaving(null)
-    }
-  }
+  useEffect(() => {
+    fetchUsers()
+    fetchRolesFromStore(companyId)
+  }, [fetchRolesFromStore, companyId, fetchUsers])
+
+  
+
+  // role assignment moved to Users page
 
   const getUserInitials = (firstName: string, lastName: string) => {
     return `${firstName?.charAt(0) || ''}${lastName?.charAt(0) || ''}`.toUpperCase()
@@ -96,6 +100,9 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
       user.role_name?.toLowerCase().includes(search)
     )
   })
+
+  // If onlyOrphaned flag is set, filter to orphaned users only
+  const displayedUsers = onlyOrphaned ? filteredUsers.filter(u => u.is_orphaned === true) : filteredUsers
 
   if (loading) {
     return (
@@ -122,10 +129,12 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
               Kullanıcılara roller atayın veya mevcut rolleri değiştirin
             </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={fetchUsers}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Yenile
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={fetchUsers}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Yenile
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -147,8 +156,6 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
               <TableRow>
                 <TableHead className="w-[250px]">Kullanıcı</TableHead>
                 <TableHead>Email</TableHead>
-                <TableHead className="w-[150px]">Mevcut Rol</TableHead>
-                <TableHead className="w-[200px]">Rol Değiştir</TableHead>
                 <TableHead className="w-[100px]">Durum</TableHead>
                 <TableHead className="w-[100px] text-center">İşlemler</TableHead>
               </TableRow>
@@ -161,13 +168,13 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredUsers.map((user) => {
+                displayedUsers.map((user) => {
                   const isExpanded = expandedUserId === user.id
                   
                   return (
                     <React.Fragment key={user.id}>
                       <TableRow 
-                        className="cursor-pointer hover:bg-muted/50 transition-colors"
+                        className={`cursor-pointer hover:bg-muted/50 transition-colors ${user.is_orphaned ? 'bg-red-50 border-l-4 border-red-200' : ''}`}
                         onClick={(e) => {
                           // Don't toggle if clicking on select or button
                           if ((e.target as HTMLElement).closest('button, [role="combobox"]')) {
@@ -197,54 +204,44 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
                           </div>
                         </TableCell>
                         <TableCell className="text-muted-foreground">{user.email}</TableCell>
-                        <TableCell>
-                          {user.role_name ? (
-                            <Badge variant="secondary" className="font-normal">
-                              {user.role_name}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Yok</span>
-                          )}
-                        </TableCell>
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          <Select
-                            value={user.role_id || ''}
-                            onValueChange={(roleId) => 
-                              assignRoleToUser(user.id, roleId, `${user.first_name} ${user.last_name}`)
-                            }
-                            disabled={saving === user.id}
-                          >
-                            <SelectTrigger className="h-9">
-                              <SelectValue placeholder="Rol seçin..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {roles.filter(role => role.is_active).map((role) => (
-                                <SelectItem key={role.id} value={role.id}>
-                                  {role.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
+                        {/* Role assignment moved to Users page. Column removed here. */}
                         <TableCell>
                           <Badge variant={user.is_active ? "default" : "secondary"}>
                             {user.is_active ? 'Aktif' : 'Pasif'}
                           </Badge>
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-center">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setSelectedUser(user)
-                                setShowPermissionsModal(true)
-                              }}
-                              className="h-8 w-8 p-0"
-                              title="Özel izinleri düzenle"
-                            >
-                              <Settings className="h-4 w-4" />
-                            </Button>
+                          <div className="flex items-center justify-center space-x-2">
+                            {user.is_orphaned && (
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                className="min-w-[68px]"
+                                onClick={async () => {
+                                  if (!confirm('Bu orphaned üyeyi silmek istiyor musunuz?')) return
+                                  setSaving(user.id)
+                                  try {
+                                    const memberId = user.member_id
+                                    if (memberId) {
+                                      const res = await removeMember(companyId!, memberId)
+                                      if (res.success) {
+                                        toast.success('Orphaned üye silindi')
+                                        await fetchUsers()
+                                        onUpdate()
+                                      } else {
+                                        toast.error(res.error || 'Silme başarısız')
+                                      }
+                                    }
+                                  } catch (error) {
+                                    console.error(error)
+                                    toast.error('Silme sırasında hata oluştu')
+                                  } finally {
+                                    setSaving(null)
+                                  }
+                                }}
+                              ><Trash className="h-4 w-4 mr-2" />Sil</Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -280,15 +277,9 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
     </Card>
     
     {/* User Permissions Modal */}
-    {showPermissionsModal && selectedUser && (
-      <UserPermissionsModal
-        user={selectedUser}
-        onClose={() => {
-          setShowPermissionsModal(false)
-          setSelectedUser(null)
-        }}
-      />
-    )}
+    {/* Permissions editing moved to Users list */}
+  <OrphanedMembersModal open={orphanOpen} onOpenChange={setOrphanOpen} companyId={companyId || ''} />
+    
     </>
   )
 }

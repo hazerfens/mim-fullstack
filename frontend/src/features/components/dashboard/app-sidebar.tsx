@@ -94,21 +94,22 @@ const data = {
       url: "#",
       icon: Settings2,
       items: [
+
         {
-          title: "General",
-          url: "#",
-        },
-        {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Billing",
-          url: "#",
+          title: "Kullanıcı Ayarları",
+          url: "/dashboard/settings/users",
         },
         {
           title: "Roles & Permissions",
           url: "/dashboard/settings/roles",
+        },
+        {
+          title: "Kullanıcı Davetleri",
+          url: "/dashboard/company/members",
+        },
+        {
+          title: "Firma İşlemleri",
+          url: "/dashboard/company/settings",
         },
       ],
     },
