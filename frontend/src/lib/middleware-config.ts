@@ -41,7 +41,7 @@ export const middlewareConfig = {
   roleRestrictedRoutes: {
     '/dashboard': ['admin', 'super_admin'], // Only admin and super_admin can access dashboard
     '/settings': ['admin', 'super_admin'],
-    '/settings/roles': ['super_admin'], // Only super_admin can manage roles
+  '/settings/roles': ['admin', 'super_admin'], // admin and super_admin can manage roles
     '/settings/users': ['admin', 'super_admin'],
   } as Record<string, string[]>,
 
@@ -50,14 +50,14 @@ export const middlewareConfig = {
     {
       pattern: /^\/dashboard\/.*/,
       allowedRoles: ['admin', 'super_admin'],
+    {
+      pattern: /^\/settings\/roles\/.*$/,
+      allowedRoles: ['admin', 'super_admin'],
     },
     {
-      pattern: /^\/settings\/roles\/.*/,
-      allowedRoles: ['super_admin'],
+      pattern: /^\/api\/v1\/roles\/.*$/,
+      allowedRoles: ['admin', 'super_admin'],
     },
-    {
-      pattern: /^\/api\/v1\/roles\/.*/,
-      allowedRoles: ['super_admin'],
     },
     {
       pattern: /^\/api\/v1\/users\/.*/,

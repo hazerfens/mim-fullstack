@@ -196,6 +196,16 @@ export async function GET(
         if (!res.ok) {
           const errorData = await res.json();
           console.log("❌ Backend error:", errorData);
+
+          // Refresh token geçersiz ise cookie'leri temizle ve login'e yönlendir
+          if (res.status === 401) {
+            const response = NextResponse.redirect(new URL("/auth/login", request.url));
+            response.cookies.delete("access_token");
+            response.cookies.delete("refresh_token");
+            response.cookies.delete("initialUser");
+            return response;
+          }
+
           return NextResponse.redirect(new URL("/auth/login", request.url));
         }
 

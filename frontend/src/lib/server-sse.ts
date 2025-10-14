@@ -4,6 +4,7 @@ type SendFn = (payload: string) => void
 
 const subscribers = new Set<SendFn>()
 const roleSubscribers = new Set<SendFn>()
+const permissionSubscribers = new Set<SendFn>()
 
 export function subscribeToUserEvents(send: SendFn) {
   subscribers.add(send)
@@ -38,6 +39,26 @@ export function broadcastRoleEvent(event: unknown) {
         send(payload)
       } catch {
         // ignore per-client errors for role channel
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function subscribeToPermissionEvents(send: SendFn) {
+  permissionSubscribers.add(send)
+  return () => permissionSubscribers.delete(send)
+}
+
+export function broadcastPermissionEvent(event: unknown) {
+  try {
+    const payload = JSON.stringify(event)
+    for (const send of Array.from(permissionSubscribers)) {
+      try {
+        send(payload)
+      } catch {
+        // ignore per-client errors for permission channel
       }
     }
   } catch {

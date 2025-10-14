@@ -4,8 +4,8 @@ import React, { useState, useEffect } from 'react'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Shield, Loader2 } from 'lucide-react'
-import { updateRoleAction, updateRoleWithPermissionNames, getPermissionCatalogAction, type Role } from '@/features/actions/settings/roles/role-actions'
-import { permissionNamesFromPermissions, type Permissions, type PermissionDetail, type PermissionCatalogEntry } from '@/lib/permissions'
+import { updateRoleAction, updateRoleWithPermissionNames, getPermissionCatalogAction, type Role, getCompanyRolePermissionsAction, updateCompanyRolePermissionAction, getRolePermissionsAction, updateRolePermissionAction } from '@/features/actions/settings/roles/role-actions'
+import { permissionNamesFromPermissions, permissionsFromNames, type Permissions, type PermissionDetail, type PermissionCatalogEntry } from '@/lib/permissions'
 import { toast } from 'sonner'
 import { useRolesStore } from '@/stores/roles-store'
 
@@ -53,9 +53,38 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
   const [usingCatalog, setUsingCatalog] = useState(false)
   const [updating, setUpdating] = useState<Record<string, boolean>>({})
   const [localPermissions, setLocalPermissions] = useState<Permissions>(role.permissions)
+  const [persistedPermissions, setPersistedPermissions] = useState<Array<{ id: string; resource: string; action: string; is_active: boolean }> | null>(null)
 
   // Check if this is super_admin role
   const isSuperAdmin = role.name?.toLowerCase() === 'super_admin' || role.name?.toLowerCase() === 'super admin'
+
+  // Helper: try to find a persisted RolePermission row using several
+  // normalization strategies (case-insensitive, singular/plural variants).
+  const findPersistedRP = (res: string, act: string) => {
+    if (!persistedPermissions) return undefined
+    const targetRes = (res || '').toLowerCase().trim()
+    const targetAct = (act || '').toLowerCase().trim()
+
+    // 1) exact case-insensitive match
+    let rp = persistedPermissions.find(p => p.resource?.toLowerCase?.() === targetRes && p.action?.toLowerCase?.() === targetAct)
+    if (rp) return rp
+
+    // 2) pluralization heuristics
+    const variants = new Set<string>()
+    variants.add(targetRes)
+    if (!targetRes.endsWith('s')) variants.add(targetRes + 's')
+    if (targetRes.endsWith('s')) variants.add(targetRes.slice(0, -1))
+    // also try replacing underscores/dots
+    variants.add(targetRes.replace(/_/g, ''))
+    variants.add(targetRes.replace(/\./g, ''))
+
+    for (const vr of Array.from(variants)) {
+      rp = persistedPermissions.find(p => p.resource?.toLowerCase?.() === vr && p.action?.toLowerCase?.() === targetAct)
+      if (rp) return rp
+    }
+
+    return undefined
+  }
 
   // Sync local state when role changes
   useEffect(() => {
@@ -75,9 +104,27 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
           setCatalog(null)
           setUsingCatalog(false)
         }
-      } catch (e) {
+      } catch {
         setCatalog(null)
         setUsingCatalog(false)
+      }
+    })()
+
+    // Load persisted role_permissions for this role (company or system)
+    void (async () => {
+      try {
+        if (!role || !role.id) return
+        if (companyId) {
+          const rr = await getCompanyRolePermissionsAction(companyId, role.id)
+          if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          else setPersistedPermissions(null)
+        } else {
+          const rr = await getRolePermissionsAction(role.id)
+          if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          else setPersistedPermissions(null)
+        }
+      } catch (err) {
+        setPersistedPermissions(null)
       }
     })()
   }, [role.permissions])
@@ -86,7 +133,7 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
     const updateKey = `${resource}-${action}`
     setUpdating(prev => ({ ...prev, [updateKey]: true }))
 
-    // Optimistic update
+    // Optimistic update (local permissions blob)
     setLocalPermissions(prev => ({
       ...prev,
       [resource]: {
@@ -96,10 +143,61 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
     }))
 
     try {
+      // If persisted role_permissions are present, prefer toggling by ID
+  if (persistedPermissions && persistedPermissions.length > 0) {
+  const rp = findPersistedRP(resource, action)
+        if (rp) {
+          // Instead of toggling the persisted row via PATCH, update the full
+          // role.permissions blob via PUT so the canonical role object (and
+          // the UI that reads it) is kept in sync with Casbin/DB state.
+          const updatedPermissions = {
+            ...localPermissions,
+            [resource]: {
+              ...localPermissions[resource as keyof Permissions],
+              [action]: checked
+            }
+          }
+
+          const result = await updateRoleAction(role.id, {
+            name: role.name,
+            description: role.description,
+            permissions: updatedPermissions,
+            is_active: role.is_active
+          }, companyId)
+
+          if (result.status === 'success' && result.role) {
+            toast.success('İzin güncellendi', {
+              description: `${role.name} rolü için ${actionLabels[action]} izni ${checked ? 'verildi' : 'kaldırıldı'}`,
+            })
+            const setRoles = useRolesStore.getState().setRoles
+            const current = useRolesStore.getState().roles || []
+            const updated = current.map((r) => (r.id === result.role.id ? result.role : r))
+            if (!updated.find((r) => r.id === result.role.id)) updated.push(result.role)
+            setRoles(updated)
+            if (result.role && result.role.permissions) {
+              setLocalPermissions(result.role.permissions as Permissions)
+              // refresh persisted rows from server
+              if (companyId) {
+                const rr = await getCompanyRolePermissionsAction(companyId, role.id)
+                if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+              } else {
+                const rr = await getRolePermissionsAction(role.id)
+                if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+              }
+            }
+          } else {
+            setLocalPermissions(role.permissions)
+            toast.error('Hata', { description: result.message || "İzin güncellenirken hata oluştu" })
+          }
+          return
+        }
+      }
+
+      // Fallback: update the entire role.permissions blob (this will create persisted rows if missing)
       const updatedPermissions = {
-        ...role.permissions,
+        ...localPermissions,
         [resource]: {
-          ...role.permissions[resource as keyof Permissions],
+          ...localPermissions[resource as keyof Permissions],
           [action]: checked
         }
       }
@@ -109,18 +207,28 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
         description: role.description,
         permissions: updatedPermissions,
         is_active: role.is_active
-      }, companyId)
+      }, companyId ?? undefined)
 
       if (result.status === 'success' && result.role) {
         toast.success('İzin güncellendi', {
           description: `${role.name} rolü için ${actionLabels[action]} izni ${checked ? 'verildi' : 'kaldırıldı'}`,
         })
-        // Update the local roles store so the UI reflects the change immediately
         const setRoles = useRolesStore.getState().setRoles
         const current = useRolesStore.getState().roles || []
         const updated = current.map((r) => (r.id === result.role.id ? result.role : r))
         if (!updated.find((r) => r.id === result.role.id)) updated.push(result.role)
         setRoles(updated)
+        if (result.role && result.role.permissions) {
+          setLocalPermissions(result.role.permissions as Permissions)
+          // refresh persisted rows from server
+          if (companyId) {
+            const rr = await getCompanyRolePermissionsAction(companyId, role.id)
+            if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          } else {
+            const rr = await getRolePermissionsAction(role.id)
+            if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          }
+        }
       } else {
         // Revert on error
         setLocalPermissions(role.permissions)
@@ -142,15 +250,68 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
 
   // When catalog-driven UI toggles, map named permission to role update
   const handleNamedPermissionChange = async (name: string, checked: boolean) => {
-    // Build current list of names from role.permissions then add/remove
-    const currentNames = new Set<string>(permissionNamesFromPermissions(role.permissions))
+    // Use localPermissions as the authoritative (optimistic) state so rapid
+    // toggles do not get lost due to reading stale role.permissions props.
+    const before = localPermissions
+    const currentNames = new Set<string>(permissionNamesFromPermissions(localPermissions))
     if (checked) {
       currentNames.add(name)
     } else {
       currentNames.delete(name)
     }
+
+    // Optimistically update localPermissions so the UI reflects the change
+    try {
+      const newPerms = permissionsFromNames(Array.from(currentNames))
+      setLocalPermissions(newPerms)
+    } catch {
+      // fallthrough — do not block the network call
+    }
+
     setUpdating(prev => ({ ...prev, [name]: true }))
     try {
+      // If persisted rows exist, toggle by matching resource/action
+      const parts = name.split(":")
+      const resourceName = parts[0]
+      const actionName = parts[1]
+  if (persistedPermissions && persistedPermissions.length > 0 && resourceName && actionName) {
+  const rp = findPersistedRP(resourceName, actionName)
+  if (!rp) console.debug('PermissionMatrix: persisted rp not found for', resourceName, actionName, 'trying exact list:', persistedPermissions.map(p => `${p.resource}:${p.action}`))
+        if (rp) {
+          // Prefer PUT update of the full role so aggregate views update
+          // consistently. Build new permission name set and call update.
+          if (checked) {
+            currentNames.add(name)
+          } else {
+            currentNames.delete(name)
+          }
+          const result = await updateRoleWithPermissionNames(role.id, Array.from(currentNames), companyId ?? undefined)
+          if (result.status === 'success') {
+            toast.success('İzin güncellendi')
+            const setRoles = useRolesStore.getState().setRoles
+            const current = useRolesStore.getState().roles || []
+            const updated = current.map((r) => (r.id === result.role.id ? result.role : r))
+            if (!updated.find((r) => r.id === result.role.id)) updated.push(result.role)
+            setRoles(updated)
+            if (result.role && result.role.permissions) {
+              setLocalPermissions(result.role.permissions as Permissions)
+              // refresh persisted rows
+              if (companyId) {
+                const rr = await getCompanyRolePermissionsAction(companyId, role.id)
+                if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+              } else {
+                const rr = await getRolePermissionsAction(role.id)
+                if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+              }
+            }
+          } else {
+            setLocalPermissions(before)
+            toast.error('İzin güncellenirken hata oluştu')
+          }
+          return
+        }
+      }
+
       const result = await updateRoleWithPermissionNames(role.id, Array.from(currentNames), companyId)
       if (result.status === 'success') {
         toast.success('İzin güncellendi')
@@ -159,9 +320,27 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
         const updated = current.map((r) => (r.id === result.role.id ? result.role : r))
         if (!updated.find((r) => r.id === result.role.id)) updated.push(result.role)
         setRoles(updated)
+        // Make sure our optimistic UI matches server state (if provided)
+        if (result.role && result.role.permissions) {
+          setLocalPermissions(result.role.permissions as Permissions)
+          // refresh persisted rows
+          if (companyId) {
+            const rr = await getCompanyRolePermissionsAction(companyId, role.id)
+            if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          } else {
+            const rr = await getRolePermissionsAction(role.id)
+            if (rr.status === 'success') setPersistedPermissions(rr.permissions || [])
+          }
+        }
       } else {
+        // Revert on error
+        setLocalPermissions(before)
         toast.error('İzin güncellenirken hata oluştu')
       }
+    } catch (err) {
+      console.error('Named permission update error:', err)
+      setLocalPermissions(before)
+      toast.error('İzin güncellenirken hata oluştu')
     } finally {
       setUpdating(prev => ({ ...prev, [name]: false }))
     }
@@ -169,7 +348,13 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
 
   const getPermissionValue = (resource: string, action: string): boolean => {
     const resourcePerms = localPermissions?.[resource as keyof Permissions]
-    return resourcePerms?.[action as keyof PermissionDetail] || false
+    if (!resourcePerms) return false
+    // resourcePerms may be a PermissionDetail or a Custom map; guard and
+    // only return boolean flags when available.
+    const asDetail = resourcePerms as PermissionDetail
+    const val = asDetail[action as keyof PermissionDetail]
+    if (typeof val === 'boolean') return val
+    return false
   }
 
   return (
@@ -236,7 +421,7 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = ({ role, compan
                     )
                   })
                 ) : (
-                  <div className="p-4 text-sm text-muted-foreground">İzin kataloğu boş. Üstteki "İzin Kataloğu" bölümünden izinler ekleyin, ardından bu matriste roller için izinleri işaretleyebilirsiniz.</div>
+                  <div className="p-4 text-sm text-muted-foreground">İzin kataloğu boş. Üstteki &quot;İzin Kataloğu&quot; bölümünden izinler ekleyin, ardından bu matriste roller için izinleri işaretleyebilirsiniz.</div>
                 )}
               </div>
             </div>

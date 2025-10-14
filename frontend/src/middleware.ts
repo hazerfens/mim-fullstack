@@ -61,6 +61,12 @@ export function middleware(request: NextRequest) {
   const refreshToken = request.cookies.get('refresh_token')?.value
   if (!accessToken) {
     if (refreshToken) {
+      // Check if we're already trying to refresh (prevent infinite loop)
+      if (pathname === '/api/auth/refresh') {
+        // If we're already on refresh endpoint, allow it to proceed
+        return NextResponse.next()
+      }
+
       // Try to refresh token
       const refreshUrl = new URL('/api/auth/refresh', request.url)
       refreshUrl.searchParams.set('redirect', pathname)

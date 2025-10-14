@@ -1,6 +1,8 @@
-'use server'
+"use server"
 
 import { cookies } from 'next/headers'
+import { revalidatePath } from 'next/cache'
+import { broadcastUserEvent } from '@/lib/server-sse'
 
 const API_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:3333/api/v1'
 
@@ -32,7 +34,9 @@ export interface UserPermission {
   resource: string // users, roles, settings, reports
   action: string // create, read, update, delete
   is_allowed: boolean
+  domain?: string
   time_restriction?: TimeRestriction | null
+  allowed_ips?: string[]
   priority: number
   created_at: string
   updated_at: string
@@ -43,6 +47,7 @@ export interface CreateUserPermissionData {
   action: string
   is_allowed: boolean
   time_restriction?: TimeRestriction | null
+  allowed_ips?: string[]
   priority?: number
 }
 
@@ -59,7 +64,7 @@ export async function getUserCustomPermissionsAction(userId: string) {
   try {
     const headers = await getAuthHeaders()
 
-    const res = await fetch(`${API_URL}/users/${userId}/custom-permissions`, {
+    const res = await fetch(`${API_URL}/users/${userId}/permissions`, {
       method: 'GET',
       headers,
       cache: 'no-store',
@@ -94,7 +99,7 @@ export async function createUserCustomPermissionAction(userId: string, data: Cre
   try {
     const headers = await getAuthHeaders()
 
-    const res = await fetch(`${API_URL}/users/${userId}/custom-permissions`, {
+    const res = await fetch(`${API_URL}/users/${userId}/permissions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(data),
@@ -110,7 +115,10 @@ export async function createUserCustomPermissionAction(userId: string, data: Cre
       }
     }
 
-    const permission = await res.json()
+    const json = await res.json()
+    const permission = json.permission || json
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.created', userId, permission }) } catch {}
     return {
       status: 'success',
       permission,
@@ -134,7 +142,7 @@ export async function updateUserCustomPermissionAction(
   try {
     const headers = await getAuthHeaders()
 
-    const res = await fetch(`${API_URL}/users/${userId}/custom-permissions/${permissionId}`, {
+    const res = await fetch(`${API_URL}/users/${userId}/permissions/${permissionId}`, {
       method: 'PUT',
       headers,
       body: JSON.stringify(data),
@@ -150,7 +158,10 @@ export async function updateUserCustomPermissionAction(
       }
     }
 
-    const permission = await res.json()
+    const json = await res.json()
+    const permission = json.permission || json
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.updated', userId, permission }) } catch {}
     return {
       status: 'success',
       permission,
@@ -170,7 +181,7 @@ export async function deleteUserCustomPermissionAction(userId: string, permissio
   try {
     const headers = await getAuthHeaders()
 
-    const res = await fetch(`${API_URL}/users/${userId}/custom-permissions/${permissionId}`, {
+    const res = await fetch(`${API_URL}/users/${userId}/permissions/${permissionId}`, {
       method: 'DELETE',
       headers,
       cache: 'no-store',
@@ -185,6 +196,8 @@ export async function deleteUserCustomPermissionAction(userId: string, permissio
       }
     }
 
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.deleted', userId, permissionId }) } catch {}
     return {
       status: 'success',
       message: 'Permission deleted successfully',

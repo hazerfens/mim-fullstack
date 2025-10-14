@@ -4,7 +4,6 @@ import React, { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { UserRoleAssignment } from "@/features/components/dashboard/settings/roles/UserRoleAssignment"
-import { UserPermissionMatrix } from "@/features/components/dashboard/settings/roles/UserPermissionMatrix"
 import { getCompanyMembers, removeMember, type CompanyMember } from "@/features/actions/company-member-action"
 import { useCallback } from "react"
 import { Button } from "@/components/ui/button"
@@ -92,7 +91,10 @@ export default function OrphanedMembersModal({ open, onOpenChange, companyId }: 
 
                 <div>
                   <h3 className="text-sm font-semibold">Genel İzin Matrisi</h3>
-                  <UserPermissionMatrix />
+                  <div className="text-sm text-muted-foreground mt-2">
+                    İzin matrisi artık Casbin tabanlı sistem ile yönetilmektedir. 
+                    Kullanıcı özel izinleri için Ayarlar &gt; Roller bölümünü kullanın.
+                  </div>
                 </div>
               </div>
             </TabsContent>

@@ -22,6 +22,29 @@ export type RolesStore = RolesState & RolesActions;
 
 const REFETCH_INTERVAL = 2 * 60 * 1000; // 2 dakika (roles daha az değişir)
 
+// Client-side API URL for fallback fetches when server actions fail unexpectedly.
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:3333/api/v1';
+
+export async function fetchRolesClient(companyId?: string) {
+  try {
+    const url = companyId ? `${API_URL}/roles?company_id=${encodeURIComponent(companyId)}` : `${API_URL}/roles/system`;
+    const res = await fetch(url, { method: 'GET', credentials: 'include' });
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`;
+      try {
+        const j = await res.json().catch(() => null);
+        if (j && j.message) message = j.message;
+      } catch {}
+      return { status: 'error', message };
+    }
+    const data = await res.json().catch(() => null);
+    return { status: 'success', roles: (data && data.roles) || [] };
+  } catch (err: any) {
+    console.error('fetchRolesClient error:', err);
+    return { status: 'error', message: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
 // Track in-flight fetch promises per companyId to coalesce concurrent requests
 const inFlightFetches = new Map<string, Promise<void>>();
 
@@ -50,8 +73,10 @@ export const useRolesStore = create<RolesStore>()(
       fetchRoles: async (companyId?: string, force: boolean = false) => {
         const { isLoading, shouldRefetch } = get();
 
-        // If not forced and cache is fresh, skip.
-        if (!force && (isLoading || !shouldRefetch())) {
+        // If not forced and cache is fresh, skip — but if we have no roles cached
+        // we should still attempt a fetch even if the cache timestamp is recent.
+        const currentRoles = get().roles || []
+        if (!force && (isLoading || (!shouldRefetch() && currentRoles.length > 0))) {
           console.log('⏭️ Skipping roles fetch - cache is fresh');
           return;
         }
@@ -70,7 +95,16 @@ export const useRolesStore = create<RolesStore>()(
         const fetchPromise = (async () => {
           set({ isLoading: true, error: null }, false, 'fetchRoles:start');
           try {
-            const result = await getRolesAction(companyId);
+            // Prefer server action since it runs with access to server-side cookies
+            // and may perform additional normalization. If it throws or returns an
+            // error we fall back to a client-side fetch which uses browser cookies.
+            let result: any = null
+            try {
+              result = await getRolesAction(companyId)
+            } catch (err) {
+              console.warn('getRolesAction threw; attempting client-side fetch fallback', err)
+              result = await fetchRolesClient(companyId)
+            }
 
             if (result.status === 'success') {
               const fetched = (result.roles || []).filter((r: Role) => r.is_active === true)
@@ -96,11 +130,42 @@ export const useRolesStore = create<RolesStore>()(
               const activeRoles = Array.from(dedupedMap.values())
               set({ roles: activeRoles, lastFetch: Date.now(), isLoading: false, error: null }, false, 'fetchRoles:success');
             } else {
-              set({ roles: [], isLoading: false, error: result.message || 'Failed to fetch roles', lastFetch: Date.now() }, false, 'fetchRoles:error');
+              // If server action returned an error, attempt a client-side fetch
+              console.warn('getRolesAction returned error, trying client-side fetch fallback:', result.message)
+              const clientResult = await fetchRolesClient(companyId)
+              if (clientResult.status === 'success') {
+                const fetched = (clientResult.roles || []).filter((r: Role) => r.is_active === true)
+
+                // De-duplicate roles by name and prefer company-scoped role when applicable.
+                const dedupedMap = new Map<string, Role>()
+                for (const role of fetched) {
+                  const keyName = role.name
+                  const existing = dedupedMap.get(keyName)
+                  if (!existing) {
+                    dedupedMap.set(keyName, role)
+                    continue
+                  }
+                  const existingCompany = existing.company_id || null
+                  const currentCompany = role.company_id || null
+                  if (companyId && currentCompany === companyId) {
+                    dedupedMap.set(keyName, role)
+                  } else if (!existingCompany && currentCompany) {
+                    dedupedMap.set(keyName, role)
+                  }
+                }
+
+                const activeRoles = Array.from(dedupedMap.values())
+                set({ roles: activeRoles, lastFetch: Date.now(), isLoading: false, error: null }, false, 'fetchRoles:success:clientFallback');
+              } else {
+                // Do not mark lastFetch on error so callers can retry sooner.
+                set({ roles: [], isLoading: false, error: result.message || clientResult.message || 'Failed to fetch roles' }, false, 'fetchRoles:error');
+              }
             }
           } catch (error) {
             console.error('Roles fetch failed:', error);
-            set({ roles: [], isLoading: false, error: error instanceof Error ? error.message : 'Unknown error', lastFetch: Date.now() }, false, 'fetchRoles:catch');
+            // On unexpected errors we clear loading/error state but do not mark
+            // lastFetch so subsequent callers can attempt another fetch.
+            set({ roles: [], isLoading: false, error: error instanceof Error ? error.message : 'Unknown error' }, false, 'fetchRoles:catch');
           } finally {
             inFlightFetches.delete(key);
           }

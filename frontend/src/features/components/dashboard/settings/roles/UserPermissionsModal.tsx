@@ -3,35 +3,31 @@
 import React, { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Separator } from '@/components/ui/separator'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Shield, Plus, Trash2, Clock, Calendar, Loader2 } from 'lucide-react'
+import { Shield, Loader2 } from 'lucide-react'
+import TimeInput from '@/components/ui/time-input'
 import { toast } from 'sonner'
 import {
-  getUserCustomPermissionsAction,
   createUserCustomPermissionAction,
-  deleteUserCustomPermissionAction,
+  updateUserCustomPermissionAction,
   type UserPermission,
   type TimeRestriction,
 } from '@/features/actions/settings/roles/user-permission-actions'
+import { getPermissionCatalogAction } from '@/features/actions/settings/roles/role-actions'
+import type { PermissionCatalogEntry } from '@/lib/permissions'
 import type { User } from '@/features/actions/settings/roles/role-actions'
 
 interface UserPermissionsModalProps {
   user: User
   onClose: () => void
+  resources?: { value: string; label: string }[]
+  initialPermission?: UserPermission | null
 }
 
-const resources = [
-  { value: 'users', label: 'Kullanıcılar' },
-  { value: 'roles', label: 'Roller' },
-  { value: 'settings', label: 'Ayarlar' },
-  { value: 'reports', label: 'Raporlar' },
-]
+// Resource list will be populated from permission catalog when available
 
 const actions = [
   { value: 'create', label: 'Oluştur (C)', short: 'C' },
@@ -40,21 +36,12 @@ const actions = [
   { value: 'delete', label: 'Sil (D)', short: 'D' },
 ]
 
-const weekDays = [
-  { value: 1, label: 'Pazartesi' },
-  { value: 2, label: 'Salı' },
-  { value: 3, label: 'Çarşamba' },
-  { value: 4, label: 'Perşembe' },
-  { value: 5, label: 'Cuma' },
-  { value: 6, label: 'Cumartesi' },
-  { value: 7, label: 'Pazar' },
-]
 
-export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user, onClose }) => {
-  const [permissions, setPermissions] = useState<UserPermission[]>([])
-  const [loading, setLoading] = useState(true)
+export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user, onClose, resources: resourcesProp, initialPermission }) => {
   const [saving, setSaving] = useState(false)
-  const [showAddForm, setShowAddForm] = useState(false)
+  // We only show the form inside the modal; permission listing is handled by the caller (accordion)
+  // The modal receives an optional initialPermission for edit mode.
+  const [editingPermission, setEditingPermission] = useState<UserPermission | null>(null)
 
   // New permission form state
   const [newPermission, setNewPermission] = useState({
@@ -68,31 +55,56 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
       start_time: '08:00',
       end_time: '18:00',
     } as TimeRestriction,
+    allowedIpsRaw: '',
   })
 
-  useEffect(() => {
-    fetchPermissions()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.id])
+  const [resourceOptions, setResourceOptions] = useState<{ value: string; label: string }[]>(resourcesProp || [])
+  const [resourcesLoading, setResourcesLoading] = useState(false)
 
-  const fetchPermissions = async () => {
-    setLoading(true)
-    try {
-      const result = await getUserCustomPermissionsAction(user.id)
-      if (result.status === 'success') {
-        setPermissions(result.permissions || [])
-      } else {
-        toast.error('İzinler yüklenemedi', {
-          description: result.message,
-        })
-      }
-    } catch (error) {
-      console.error('Error fetching permissions:', error)
-      toast.error('İzinler yüklenirken hata oluştu')
-    } finally {
-      setLoading(false)
+  useEffect(() => {
+    if (resourcesProp) return
+    let cancelled = false
+    ;(async () => {
+      setResourcesLoading(true)
+      try {
+        const res = await getPermissionCatalogAction()
+        if (res.status === 'success' && Array.isArray(res.permissions) && res.permissions.length > 0) {
+          const map = new Map<string, PermissionCatalogEntry>()
+          res.permissions.forEach((entry: PermissionCatalogEntry) => {
+            const raw = entry.name || ''
+            const base = raw.includes(':') ? raw.split(':')[0] : raw.includes('.') ? raw.split('.')[0] : raw
+            if (!map.has(base)) map.set(base, entry)
+          })
+          const opts = Array.from(map.entries()).map(([base, entry]) => ({ value: base, label: entry.display_name || base }))
+          if (!cancelled) setResourceOptions(opts)
+        }
+      } catch (err) {
+        console.error('Failed to load permission catalog for user modal', err)
+      } finally { if (!cancelled) setResourcesLoading(false) }
+    })()
+    return () => { cancelled = true }
+  }, [resourcesProp])
+
+  // No local permission fetch — listing lives in the users accordion/parent
+
+  useEffect(() => {
+    if (initialPermission) {
+      const ip = initialPermission as UserPermission
+      setEditingPermission(ip)
+      // Prefill form for edit
+      setNewPermission({
+        resource: ip.resource,
+        action: ip.action,
+        is_allowed: ip.is_allowed,
+        priority: ip.priority || 10,
+        useTimeRestriction: !!ip.time_restriction,
+        timeRestriction: ip.time_restriction || { allowed_days: [], start_time: '08:00', end_time: '18:00' },
+        allowedIpsRaw: ip.allowed_ips ? ip.allowed_ips.join(', ') : '',
+      })
     }
-  }
+  }, [initialPermission])
+
+  // permission listing removed from modal; parent component is responsible for loading
 
   const handleAddPermission = async () => {
     if (!newPermission.resource || !newPermission.action) {
@@ -102,24 +114,45 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
 
     setSaving(true)
     try {
+      const ips = (newPermission.allowedIpsRaw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+
       const data = {
         resource: newPermission.resource,
         action: newPermission.action,
         is_allowed: newPermission.is_allowed,
         priority: newPermission.priority,
         time_restriction: newPermission.useTimeRestriction ? newPermission.timeRestriction : null,
+        allowed_ips: ips.length > 0 ? ips : undefined,
       }
-
-      const result = await createUserCustomPermissionAction(user.id, data)
-      if (result.status === 'success') {
-        toast.success('✅ İzin başarıyla eklendi')
-        fetchPermissions()
-        setShowAddForm(false)
-        resetNewPermission()
+      if (editingPermission) {
+        // Update flow
+        const result = await updateUserCustomPermissionAction(user.id, editingPermission.id, data)
+        if (result.status === 'success') {
+          toast.success('✅ İzin başarıyla güncellendi')
+          resetNewPermission()
+          setEditingPermission(null)
+          // Close modal so parent can refresh the listing in the accordion
+          onClose()
+          return
+        } else {
+          toast.error('❌ İzin güncellenemedi', { description: result.message })
+        }
       } else {
-        toast.error('❌ İzin eklenemedi', {
-          description: result.message,
-        })
+        const result = await createUserCustomPermissionAction(user.id, data)
+        if (result.status === 'success') {
+          toast.success('✅ İzin başarıyla eklendi')
+          resetNewPermission()
+          // Close modal so parent can refresh the listing in the accordion
+          onClose()
+          return
+        } else {
+          toast.error('❌ İzin eklenemedi', {
+            description: result.message,
+          })
+        }
       }
     } catch (error) {
       console.error('Error adding permission:', error)
@@ -129,27 +162,7 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
     }
   }
 
-  const handleDeletePermission = async (permissionId: string) => {
-    if (!confirm('Bu izni silmek istediğinizden emin misiniz?')) return
-
-    setSaving(true)
-    try {
-      const result = await deleteUserCustomPermissionAction(user.id, permissionId)
-      if (result.status === 'success') {
-        toast.success('✅ İzin başarıyla silindi')
-        fetchPermissions()
-      } else {
-        toast.error('❌ İzin silinemedi', {
-          description: result.message,
-        })
-      }
-    } catch (error) {
-      console.error('Error deleting permission:', error)
-      toast.error('İzin silinirken hata oluştu')
-    } finally {
-      setSaving(false)
-    }
-  }
+  // Deletion handled by parent listing; modal focuses on create/update only
 
   const resetNewPermission = () => {
     setNewPermission({
@@ -163,26 +176,15 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
         start_time: '08:00',
         end_time: '18:00',
       },
+      allowedIpsRaw: '',
     })
   }
 
-  const toggleWeekDay = (day: number) => {
-    setNewPermission((prev) => {
-      const days = prev.timeRestriction.allowed_days || []
-      const newDays = days.includes(day) ? days.filter((d) => d !== day) : [...days, day]
-      return {
-        ...prev,
-        timeRestriction: {
-          ...prev.timeRestriction,
-          allowed_days: newDays,
-        },
-      }
-    })
-  }
+  // week day toggling intentionally left out for compact UI; can be added later
 
   return (
     <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+  <DialogContent className="w-full max-w-[96vw] sm:max-w-4xl max-h-[88vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shield className="h-5 w-5" />
@@ -193,280 +195,82 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({ user
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 pr-4">
-          <div className="space-y-6 py-4">
-            {/* Current Permissions List */}
-            {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : permissions.length === 0 && !showAddForm ? (
-              <div className="text-center py-8 border-2 border-dashed rounded-lg">
-                <Shield className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-                <p className="text-muted-foreground mb-4">Henüz özel izin tanımlanmamış</p>
-                <Button type="button" onClick={() => setShowAddForm(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  İlk İzni Ekle
-                </Button>
-              </div>
-            ) : (
-              <>
-                {permissions.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Mevcut Özel İzinler</h3>
-                      <Badge variant="secondary">{permissions.length} izin</Badge>
-                    </div>
-
-                    {permissions.map((permission) => (
-                      <div
-                        key={permission.id}
-                        className="border rounded-lg p-4 space-y-3 hover:bg-muted/30 transition-colors"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <Badge variant="outline" className="font-mono">
-                                {permission.resource}.{permission.action}
-                              </Badge>
-                              <Badge variant={permission.is_allowed ? 'default' : 'destructive'}>
-                                {permission.is_allowed ? 'İzinli' : 'Yasaklı'}
-                              </Badge>
-                              <Badge variant="secondary">Priority: {permission.priority}</Badge>
-                            </div>
-
-                            {/* Time Restriction Info */}
-                            {permission.time_restriction && (
-                              <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
-                                {permission.time_restriction.start_time && permission.time_restriction.end_time && (
-                                  <div className="flex items-center gap-1">
-                                    <Clock className="h-3 w-3" />
-                                    <span>
-                                      {permission.time_restriction.start_time} - {permission.time_restriction.end_time}
-                                    </span>
-                                  </div>
-                                )}
-                                {permission.time_restriction.allowed_days &&
-                                  permission.time_restriction.allowed_days.length > 0 && (
-                                    <div className="flex items-center gap-1">
-                                      <Calendar className="h-3 w-3" />
-                                      <span>
-                                        {permission.time_restriction.allowed_days
-                                          .map((day) => weekDays.find((d) => d.value === day)?.label.substring(0, 3))
-                                          .join(', ')}
-                                      </span>
-                                    </div>
-                                  )}
-                              </div>
-                            )}
-                          </div>
-
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDeletePermission(permission.id)}
-                            disabled={saving}
-                            className="text-destructive hover:text-destructive"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
+        <div className="flex-1 overflow-auto py-3">
+          <div className="mx-auto w-full">
+            <div className="border rounded-md p-4 bg-card">
+              <h4 className="font-semibold mb-3">{editingPermission ? 'Özel İzni Düzenle' : 'Yeni Özel İzin'}</h4>
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className='flex flex-col gap-3'>
+                    <Label>
+                      Kaynak
+                      {resourcesLoading && <Loader2 className="inline-block h-4 w-4 ml-2 animate-spin text-muted-foreground" />}
+                    </Label>
+                    <Select value={newPermission.resource} onValueChange={(v) => setNewPermission({ ...newPermission, resource: v })} >
+                      <SelectTrigger className='w-full'><SelectValue placeholder="Kaynak seçin..." /></SelectTrigger>
+                      <SelectContent>
+                        {resourceOptions.length === 0 ? (
+                          <SelectItem key="no-resources" value="__no_resources__" disabled>İzin kaynağı bulunamadı</SelectItem>
+                        ) : (
+                          resourceOptions.map((r) => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)
+                        )}
+                      </SelectContent>
+                    </Select>
                   </div>
-                )}
 
-                <Separator />
+                  <div className='flex flex-col gap-3'>
+                    <Label>İşlem</Label>
+                    <Select value={newPermission.action} onValueChange={(v) => setNewPermission({ ...newPermission, action: v })}>
+                      <SelectTrigger className='w-full'><SelectValue placeholder="İşlem seçin..." /></SelectTrigger>
+                      <SelectContent>
+                        {actions.map(a => <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
 
-                {/* Add New Permission Form */}
-                {!showAddForm ? (
-                  <Button type="button" onClick={() => setShowAddForm(true)} variant="outline" className="w-full">
-                    <Plus className="h-4 w-4 mr-2" />
-                    Yeni İzin Ekle
-                  </Button>
-                ) : (
-                  <div className="border-2 border-primary/20 rounded-lg p-4 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">Yeni İzin Ekle</h3>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setShowAddForm(false)
-                          resetNewPermission()
-                        }}
-                      >
-                        İptal
-                      </Button>
-                    </div>
+                <div className='flex flex-col gap-3'>
+                  <Label>Allowed IPs</Label>
+                  <Input value={newPermission.allowedIpsRaw} onChange={(e) => setNewPermission({ ...newPermission, allowedIpsRaw: e.target.value })} placeholder="10.0.0.1, 192.168.0.0/24" />
+                </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Kaynak *</Label>
-                        <Select value={newPermission.resource} onValueChange={(value) => setNewPermission({ ...newPermission, resource: value })}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Kaynak seçin..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {resources.map((resource) => (
-                              <SelectItem key={resource.value} value={resource.value}>
-                                {resource.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>İşlem *</Label>
-                        <Select value={newPermission.action} onValueChange={(value) => setNewPermission({ ...newPermission, action: value })}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="İşlem seçin..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {actions.map((action) => (
-                              <SelectItem key={action.value} value={action.value}>
-                                {action.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-0.5">
-                        <Label>İzin Durumu</Label>
-                        <p className="text-xs text-muted-foreground">İzin verilsin mi, yoksa yasaklansın mı?</p>
-                      </div>
-                      <Switch
-                        checked={newPermission.is_allowed}
-                        onCheckedChange={(checked) => setNewPermission({ ...newPermission, is_allowed: checked })}
+                <div className='flex flex-col gap-3'>
+                  <Label>Zaman Kısıtlaması</Label>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={newPermission.useTimeRestriction} onCheckedChange={(v) => setNewPermission({ ...newPermission, useTimeRestriction: v })} />
+                    <span className="text-xs text-muted-foreground">Aktif</span>
+                  </div>
+                  {newPermission.useTimeRestriction && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    <TimeInput
+                      id={`${user.id}-start-time`}
+                      label="Başlangıç"
+                      step={1}
+                      value={newPermission.timeRestriction.start_time}
+                      onChange={(v: string) => setNewPermission({ ...newPermission, timeRestriction: { ...newPermission.timeRestriction, start_time: v } })}
+                    />
+                      <TimeInput
+                        id={`${user.id}-end-time`}
+                        label="Bitiş"
+                        step={1}
+                        value={newPermission.timeRestriction.end_time}
+                        onChange={(v: string) => setNewPermission({ ...newPermission, timeRestriction: { ...newPermission.timeRestriction, end_time: v } })}
                       />
                     </div>
+                  )}
+                </div>
 
-                    <div className="space-y-2">
-                      <Label>Öncelik</Label>
-                      <Input
-                        type="number"
-                        value={newPermission.priority}
-                        onChange={(e) => setNewPermission({ ...newPermission, priority: parseInt(e.target.value) || 0 })}
-                        placeholder="10"
-                        min={0}
-                        max={100}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Yüksek öncelik rol izinlerini geçersiz kılar (0-100)
-                      </p>
-                    </div>
-
-                    <Separator />
-
-                    {/* Time Restriction */}
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-0.5">
-                          <Label className="flex items-center gap-2">
-                            <Clock className="h-4 w-4" />
-                            Zaman Kısıtlaması
-                          </Label>
-                          <p className="text-xs text-muted-foreground">
-                            Belirli günler ve saatlerde geçerli olsun
-                          </p>
-                        </div>
-                        <Switch
-                          checked={newPermission.useTimeRestriction}
-                          onCheckedChange={(checked) =>
-                            setNewPermission({ ...newPermission, useTimeRestriction: checked })
-                          }
-                        />
-                      </div>
-
-                      {newPermission.useTimeRestriction && (
-                        <div className="space-y-4 pl-4 border-l-2 border-primary/20">
-                          {/* Time Range */}
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-2">
-                              <Label>Başlangıç Saati</Label>
-                              <Input
-                                type="time"
-                                value={newPermission.timeRestriction.start_time}
-                                onChange={(e) =>
-                                  setNewPermission({
-                                    ...newPermission,
-                                    timeRestriction: {
-                                      ...newPermission.timeRestriction,
-                                      start_time: e.target.value,
-                                    },
-                                  })
-                                }
-                              />
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Bitiş Saati</Label>
-                              <Input
-                                type="time"
-                                value={newPermission.timeRestriction.end_time}
-                                onChange={(e) =>
-                                  setNewPermission({
-                                    ...newPermission,
-                                    timeRestriction: {
-                                      ...newPermission.timeRestriction,
-                                      end_time: e.target.value,
-                                    },
-                                  })
-                                }
-                              />
-                            </div>
-                          </div>
-
-                          {/* Days of Week */}
-                          <div className="space-y-2">
-                            <Label>İzin Verilen Günler</Label>
-                            <div className="flex flex-wrap gap-2">
-                              {weekDays.map((day) => (
-                                <Button
-                                  key={day.value}
-                                  type="button"
-                                  variant={
-                                    newPermission.timeRestriction.allowed_days?.includes(day.value)
-                                      ? 'default'
-                                      : 'outline'
-                                  }
-                                  size="sm"
-                                  onClick={() => toggleWeekDay(day.value)}
-                                  className="min-w-[80px]"
-                                >
-                                  {day.label.substring(0, 3)}
-                                </Button>
-                              ))}
-                            </div>
-                            <p className="text-xs text-muted-foreground">
-                              Boş bırakırsanız tüm günlerde geçerli olur
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <Button type="button" onClick={handleAddPermission} disabled={saving} className="w-full">
-                      {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      İzni Kaydet
-                    </Button>
-                  </div>
-                )}
-              </>
-            )}
+                <div className="flex gap-2 mt-3">
+                  <Button type="button" onClick={handleAddPermission} disabled={saving} className="flex-1">{editingPermission ? 'Güncelle' : 'Kaydet'}</Button>
+                  <Button type="button" variant="ghost" onClick={() => { resetNewPermission(); setEditingPermission(null); onClose(); }} className="w-32">Kapat</Button>
+                </div>
+              </div>
+            </div>
           </div>
-        </ScrollArea>
+        </div>
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            Kapat
-          </Button>
+          <Button type="button" variant="outline" onClick={onClose}>Kapat</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

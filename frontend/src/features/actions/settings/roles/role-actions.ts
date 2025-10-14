@@ -22,7 +22,7 @@ async function getAuthHeaders() {
 
 import type { Permissions, PermissionCatalogEntry } from '@/lib/permissions';
 import { permissionsFromNames } from '@/lib/permissions';
-import { broadcastUserEvent, broadcastRoleEvent } from '@/lib/server-sse';
+import { broadcastUserEvent, broadcastRoleEvent, broadcastPermissionEvent } from '@/lib/server-sse';
 
 // Rol türleri
 export interface Role {
@@ -33,6 +33,7 @@ export interface Role {
   is_active: boolean;
   created_at: string;
   company_id?: string | null;
+  created_by_id?: string | null;
 }
 
 export interface User {
@@ -297,7 +298,7 @@ export async function assignRoleToUserAction(userId: string, roleId: string) {
   try {
     const headers = await getAuthHeaders();
 
-    const res = await fetch(`${API_URL}/roles/${userId}/assign-role`, {
+    const res = await fetch(`${API_URL}/roles/assign`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ role_id: roleId }),
@@ -515,7 +516,7 @@ export async function updateRoleWithPermissionNames(roleId: string, names: strin
 }
 
 // Paginated users listing server action
-export async function getUsersPaginatedAction(opts?: { page?: number; pageSize?: number; q?: string }) {
+export async function getUsersPaginatedAction(opts?: { page?: number; pageSize?: number; q?: string; excludeRole?: string }) {
   try {
     const headers = await getAuthHeaders();
     const page = opts?.page || 1;
@@ -525,6 +526,7 @@ export async function getUsersPaginatedAction(opts?: { page?: number; pageSize?:
     params.set('page', String(page));
     params.set('page_size', String(pageSize));
     if (q) params.set('q', q);
+    if (opts?.excludeRole) params.set('exclude_role', opts.excludeRole);
 
     const res = await fetch(`${API_URL}/users?${params.toString()}`, {
       method: 'GET',
@@ -608,7 +610,8 @@ export async function createPermissionAction(payload: { name: string; display_na
       return { status: 'error', message: err.error || 'Permission oluşturulurken hata oluştu', statusCode: res.status };
     }
     const data = await res.json();
-    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+  try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+  try { broadcastPermissionEvent({ type: 'permission.created', permission: data.permission || data }) } catch {}
     return { status: 'success', permission: data.permission || data };
   } catch (error) {
     console.error('createPermissionAction error:', error);
@@ -631,8 +634,9 @@ export async function updatePermissionAction(name: string, patch: Record<string,
       return { status: 'error', message: err.error || 'Permission güncellenirken hata oluştu', statusCode: res.status };
     }
     const data = await res.json();
-    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
-    return { status: 'success', permission: data.permission || data };
+  try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+  try { broadcastPermissionEvent({ type: 'permission.updated', permission: data.permission || data }) } catch {}
+  return { status: 'success', permission: data.permission || data };
   } catch (error) {
     console.error('updatePermissionAction error:', error);
     return { status: 'error', message: 'Permission güncellenirken hata oluştu', statusCode: 500 };
@@ -652,10 +656,345 @@ export async function deletePermissionAction(name: string) {
       const err = await res.json().catch(() => ({ error: 'Unknown error' }));
       return { status: 'error', message: err.error || 'Permission silinirken hata oluştu', statusCode: res.status };
     }
-    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
-    return { status: 'success' };
+  try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+  try { broadcastPermissionEvent({ type: 'permission.deleted', name }) } catch {}
+  return { status: 'success' };
   } catch (error) {
     console.error('deletePermissionAction error:', error);
     return { status: 'error', message: 'Permission silinirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// Check allowed actions for a list of permission names for a specific user.
+export async function getAllowedActionsForUserForPermissionNames(userId: string, names: string[], companyId?: string) {
+  try {
+    const headers = await getAuthHeaders();
+    const params = new URLSearchParams();
+    if (companyId) params.set('company_id', companyId);
+    // Use aggregated POST endpoint to reduce round-trips
+    const body = JSON.stringify({ user_id: userId, names, company_id: companyId })
+    const res = await fetch(`${API_URL}/permissions/aggregate/check`, {
+      method: 'POST',
+      headers,
+      body,
+      cache: 'no-store',
+    })
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }))
+      return { status: 'error', message: error.error || 'Failed to check permissions', statusCode: res.status }
+    }
+    const data = await res.json()
+    return { status: 'success', allowed: data.allowed || {} }
+  } catch (err) {
+    console.error('getAllowedActionsForUserForPermissionNames error:', err)
+    return { status: 'error', message: 'Failed to check permissions', statusCode: 500 }
+  }
+}
+
+// ===== CASBIN-BASED USER PERMISSION MANAGEMENT =====
+
+// Get user custom permissions (Casbin-based)
+export async function getUserCustomPermissionsAction(userId: string) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/users/${userId}/permissions`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return {
+        status: 'error',
+        message: error.error || 'Kullanıcı özel izinleri getirilirken hata oluştu',
+        statusCode: res.status
+      };
+    }
+
+    const data = await res.json();
+    return {
+      status: 'success',
+      permissions: data.permissions || []
+    };
+  } catch (error) {
+    console.error('getUserCustomPermissionsAction error:', error);
+    return {
+      status: 'error',
+      message: 'Kullanıcı özel izinleri getirilirken bir hata oluştu',
+      statusCode: 500
+    };
+  }
+}
+
+// RolePermission type returned by role permission endpoints
+export interface RolePermission {
+  id: string;
+  role_id: string;
+  resource: string;
+  action: string;
+  effect?: string;
+  domain?: string;
+  is_active?: boolean;
+  conditions?: any;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// Company-scoped: Get persisted role_permissions for a company role
+export async function getCompanyRolePermissionsAction(companyId: string, roleId: string) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/company/${companyId}/roles/${roleId}/permissions`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permissions yüklenemedi', statusCode: res.status };
+    }
+    const data = await res.json();
+    return { status: 'success', permissions: data.permissions as RolePermission[] || [] };
+  } catch (error) {
+    console.error('getCompanyRolePermissionsAction error:', error);
+    return { status: 'error', message: 'Role permissions yüklenirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// Company-scoped: Toggle/update a persisted RolePermission by ID
+export async function updateCompanyRolePermissionAction(companyId: string, roleId: string, permissionId: string, isActive: boolean) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/company/${companyId}/roles/${roleId}/permissions/${permissionId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ is_active: isActive }),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission değiştirilirken hata oluştu', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.toggled', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('updateCompanyRolePermissionAction error:', error);
+    return { status: 'error', message: 'Role permission değiştirilirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// System/global: Get persisted role_permissions for a global role
+export async function getRolePermissionsAction(roleId: string) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/roles/${roleId}/permissions`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permissions yüklenemedi', statusCode: res.status };
+    }
+    const data = await res.json();
+    return { status: 'success', permissions: data.permissions as RolePermission[] || [] };
+  } catch (error) {
+    console.error('getRolePermissionsAction error:', error);
+    return { status: 'error', message: 'Role permissions yüklenirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// System/global: Toggle/update a persisted RolePermission for a global role (admin only)
+export async function updateRolePermissionAction(roleId: string, permissionId: string, isActive: boolean) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/roles/${roleId}/permissions/${permissionId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ is_active: isActive }),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission değiştirilirken hata oluştu', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.toggled', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('updateRolePermissionAction error:', error);
+    return { status: 'error', message: 'Role permission değiştirilirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// Create user custom permission (Casbin-based)
+export async function createUserCustomPermissionAction(userId: string, permissionData: { resource: string; action: string; domain?: string }) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/users/${userId}/permissions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(permissionData),
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return {
+        status: 'error',
+        message: error.error || 'Kullanıcı özel izni oluşturulurken hata oluştu',
+        statusCode: res.status
+      };
+    }
+
+    const data = await res.json();
+    try {
+      revalidatePath('/dashboard/company/settings/roles');
+      revalidatePath('/dashboard/company/settings/users');
+    } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.created', userId, permission: data }) } catch {}
+    return {
+      status: 'success',
+      permission: data,
+      message: 'Kullanıcı özel izni başarıyla oluşturuldu'
+    };
+  } catch (error) {
+    console.error('createUserCustomPermissionAction error:', error);
+    return {
+      status: 'error',
+      message: 'Kullanıcı özel izni oluşturulurken bir hata oluştu',
+      statusCode: 500
+    };
+  }
+}
+
+// Update user custom permission (Casbin-based)
+export async function updateUserCustomPermissionAction(userId: string, permissionId: string, permissionData: { resource?: string; action?: string; domain?: string }) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/users/${userId}/permissions/${permissionId}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(permissionData),
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return {
+        status: 'error',
+        message: error.error || 'Kullanıcı özel izni güncellenirken hata oluştu',
+        statusCode: res.status
+      };
+    }
+
+    const data = await res.json();
+    try {
+      revalidatePath('/dashboard/company/settings/roles');
+      revalidatePath('/dashboard/company/settings/users');
+    } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.updated', userId, permission: data }) } catch {}
+    return {
+      status: 'success',
+      permission: data,
+      message: 'Kullanıcı özel izni başarıyla güncellendi'
+    };
+  } catch (error) {
+    console.error('updateUserCustomPermissionAction error:', error);
+    return {
+      status: 'error',
+      message: 'Kullanıcı özel izni güncellenirken bir hata oluştu',
+      statusCode: 500
+    };
+  }
+}
+
+// Delete user custom permission (Casbin-based)
+export async function deleteUserCustomPermissionAction(userId: string, permissionId: string) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/users/${userId}/permissions/${permissionId}`, {
+      method: 'DELETE',
+      headers,
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return {
+        status: 'error',
+        message: error.error || 'Kullanıcı özel izni silinirken hata oluştu',
+        statusCode: res.status
+      };
+    }
+
+    try {
+      revalidatePath('/dashboard/company/settings/roles');
+      revalidatePath('/dashboard/company/settings/users');
+    } catch {}
+    try { broadcastUserEvent({ type: 'user.custom_permission.deleted', userId, permissionId }) } catch {}
+    return {
+      status: 'success',
+      message: 'Kullanıcı özel izni başarıyla silindi'
+    };
+  } catch (error) {
+    console.error('deleteUserCustomPermissionAction error:', error);
+    return {
+      status: 'error',
+      message: 'Kullanıcı özel izni silinirken bir hata oluştu',
+      statusCode: 500
+    };
+  }
+}
+
+// Create a persisted RolePermission for a company-scoped role
+export async function createCompanyRolePermissionAction(companyId: string, roleId: string, payload: any) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/company/${companyId}/roles/${roleId}/permissions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission oluşturulamadı', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.created', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('createCompanyRolePermissionAction error:', error);
+    return { status: 'error', message: 'Role permission oluşturulurken hata oluştu', statusCode: 500 };
+  }
+}
+
+// Create a persisted RolePermission for a system/global role
+export async function createRolePermissionAction(roleId: string, payload: any) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/roles/${roleId}/permissions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission oluşturulamadı', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.created', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('createRolePermissionAction error:', error);
+    return { status: 'error', message: 'Role permission oluşturulurken hata oluştu', statusCode: 500 };
   }
 }

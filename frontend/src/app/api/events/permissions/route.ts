@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { subscribeToUserEvents } from '@/lib/server-sse'
+import { subscribeToPermissionEvents } from '@/lib/server-sse'
 import { initRedisSseBridge } from '@/lib/redis-sse-bridge'
 
 export const GET = async () => {
@@ -8,18 +8,15 @@ export const GET = async () => {
       try {
         void initRedisSseBridge()
       } catch (err) {
-        // keep in-memory SSE working even when Redis bridge can't initialize
+        // ignore bridge init failures to keep SSE stream available
         // eslint-disable-next-line no-console
-        console.warn('Redis SSE bridge init failed for users channel:', err)
+        console.warn('Redis SSE bridge init failed for permissions channel:', err)
       }
-      // write initial comment to establish SSE
       controller.enqueue(new TextEncoder().encode(':ok\n\n'))
       const send = (payload: string) => {
         controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`))
       }
-      // subscribe; unsubscribe is intentionally not stored here. In typical Next deployments
-      // the process lifecycle means the subscription will be reclaimed when the server restarts.
-      subscribeToUserEvents(send)
+      subscribeToPermissionEvents(send)
     }
   })
 
