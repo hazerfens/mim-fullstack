@@ -27,13 +27,13 @@ func SetupAPIRoutes(router gin.IRouter) {
 		userGroup.GET("/paginated", handlers.GetUsersPaginatedHandler)
 		userGroup.PUT("/:userId", handlers.UpdateUserHandler)
 		userGroup.DELETE("/:userId", handlers.DeleteUserHandler)
-		userGroup.GET("/:userId/permissions", handlers.GetUserPermissionsHandler)
+		// userGroup.GET("/:userId/permissions", handlers.GetUserPermissionsHandler) // Removed - moved to auth.go
 
-		// User custom permissions management
-		userGroup.GET("/:userId/custom-permissions", handlers.GetUserCustomPermissions)
-		userGroup.POST("/:userId/custom-permissions", handlers.CreateUserCustomPermission)
-		userGroup.PUT("/:userId/custom-permissions/:permissionId", handlers.UpdateUserCustomPermission)
-		userGroup.DELETE("/:userId/custom-permissions/:permissionId", handlers.DeleteUserCustomPermission)
+		// User custom permissions management - moved to auth.go routes
+		// userGroup.GET("/:userId/custom-permissions", handlers.GetUserCustomPermissions)
+		// userGroup.POST("/:userId/custom-permissions", handlers.CreateUserCustomPermission)
+		// userGroup.PUT("/:userId/custom-permissions/:permissionId", handlers.UpdateUserCustomPermission)
+		// userGroup.DELETE("/:userId/custom-permissions/:permissionId", handlers.DeleteUserCustomPermission)
 	}
 }
 

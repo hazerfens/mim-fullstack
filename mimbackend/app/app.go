@@ -13,6 +13,7 @@ import (
 	"mimbackend/app/migrations"
 	"mimbackend/config"
 	"mimbackend/internal/routes"
+	"mimbackend/internal/services"
 	"os"
 	"time"
 
@@ -28,9 +29,6 @@ func StartApp() {
 	if err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
 	}
-
-	// DB init
-	config.NewConnection()
 
 	// Redis init (optional cache layer) — attempt to connect and log status.
 	redisClient, rErr := config.NewRedisClient()
@@ -70,10 +68,18 @@ func StartApp() {
 		}
 	}
 
-	// Casbin removed: no-op initialization of authorization subsystem
-
 	// Migration çalıştır
 	migrations.RunMigrations()
+
+	// Initialize Casbin ABAC enforcer
+	if err := services.InitCasbin(); err != nil {
+		log.Fatalf("Failed to initialize Casbin: %v", err)
+	}
+
+	// Initialize default policies
+	if err := services.InitializeDefaultPolicies(); err != nil {
+		log.Printf("Warning: Failed to initialize default policies: %v", err)
+	}
 
 	// Opsiyonel: seed verileri yükle
 	// migrations.SeedData()

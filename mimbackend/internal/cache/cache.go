@@ -153,3 +153,89 @@ func InvalidatePermissionsCatalogAllCache(ctx context.Context) error {
 	}
 	return cli.Del(ctx, PermissionsCatalogAllKey()).Err()
 }
+
+// Per-user permission cache (individual resource for a given user)
+func UserPermissionKey(userID uuid.UUID, resource string, companyID *uuid.UUID) string {
+	if companyID == nil {
+		return fmt.Sprintf("user:permissions:%s:%s", userID.String(), resource)
+	}
+	return fmt.Sprintf("user:permissions:%s:%s:%s", userID.String(), companyID.String(), resource)
+}
+
+func GetUserPermissionCache(ctx context.Context, userID uuid.UUID, resource string, companyID *uuid.UUID) ([]byte, error) {
+	cli := config.GetRedisClient()
+	if cli == nil {
+		return nil, nil
+	}
+	key := UserPermissionKey(userID, resource, companyID)
+	val, err := cli.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
+}
+
+func SetUserPermissionCache(ctx context.Context, userID uuid.UUID, resource string, companyID *uuid.UUID, data []byte, ttl time.Duration) error {
+	cli := config.GetRedisClient()
+	if cli == nil {
+		return nil
+	}
+	key := UserPermissionKey(userID, resource, companyID)
+	return cli.Set(ctx, key, data, ttl).Err()
+}
+
+func InvalidateUserPermissionCache(ctx context.Context, userID uuid.UUID, resource string, companyID *uuid.UUID) error {
+	cli := config.GetRedisClient()
+	if cli == nil {
+		return nil
+	}
+	key := UserPermissionKey(userID, resource, companyID)
+	return cli.Del(ctx, key).Err()
+}
+
+// Invalidate all per-user permission caches that reference a given resource.
+// This scans Redis keys matching the pattern and removes them. Use with care.
+func InvalidateUserPermissionsForResource(ctx context.Context, resource string, companyID *uuid.UUID) error {
+	cli := config.GetRedisClient()
+	if cli == nil {
+		return nil
+	}
+	var pattern string
+	if companyID == nil {
+		pattern = fmt.Sprintf("user:permissions:*:%s", resource)
+	} else {
+		pattern = fmt.Sprintf("user:permissions:*:%s:%s", companyID.String(), resource)
+	}
+	// Use SCAN to iterate keys without blocking Redis
+	iter := cli.Scan(ctx, 0, pattern, 0).Iterator()
+	var toDelete []string
+	for iter.Next(ctx) {
+		toDelete = append(toDelete, iter.Val())
+		// Batch deletes every 100 keys
+		if len(toDelete) >= 100 {
+			_ = cli.Del(ctx, toDelete...).Err()
+			toDelete = toDelete[:0]
+		}
+	}
+	if len(toDelete) > 0 {
+		_ = cli.Del(ctx, toDelete...).Err()
+	}
+	return iter.Err()
+}
+
+// BuildUserPermissionCacheKey builds a cache key for user permissions
+func BuildUserPermissionCacheKey(userID uuid.UUID, resource string, companyID *uuid.UUID) string {
+	return UserPermissionKey(userID, resource, companyID)
+}
+
+// DeleteUserPermissionCache deletes a user permission cache entry
+func DeleteUserPermissionCache(ctx context.Context, cacheKey string) error {
+	cli := config.GetRedisClient()
+	if cli == nil {
+		return nil
+	}
+	return cli.Del(ctx, cacheKey).Err()
+}

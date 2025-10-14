@@ -72,6 +72,12 @@ func RunMigrations() {
 		log.Fatalf("Failed to migrate permissions catalog: %v", err)
 	}
 
+	// Ensure a unique composite index on user_permissions to prevent duplicates
+	if err := EnsureUserPermissionUniqueIndex(db); err != nil {
+		// Log a warning but continue — operator should inspect duplicate rows
+		log.Printf("⚠️  Warning: could not create unique index on user_permissions: %v", err)
+	}
+
 	// Ensure token_data and token_hash columns exist (AutoMigrate should add them, but double-check).
 	if !migrator.HasColumn(&models.Session{}, "token_data") {
 		if err := migrator.AddColumn(&models.Session{}, "token_data"); err != nil {
@@ -144,7 +150,8 @@ func RunMigrations() {
 
 	// No token_hash index needed when storing token in JSON.
 
-	// Create default roles if they don't exist
+	// Create default roles if they don't exist (roles created without
+	// model-derived permissions — permissions will be managed by admins).
 	createDefaultRoles(db)
 
 	// Backfill role_permissions from any existing Role.Permissions JSON
@@ -165,29 +172,17 @@ func RunMigrations() {
 
 // createDefaultRoles ensures common system roles exist (non-destructive)
 func createDefaultRoles(db *gorm.DB) {
-	// Define sensible default permissions for seeded roles
-	adminPerms := basemodels.Permissions{
-		Users:       &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
-		Companies:   &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
-		Branches:    &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
-		Departments: &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
-		Roles:       &basemodels.PermissionDetail{Create: boolPtr(true), Read: boolPtr(true), Update: boolPtr(true), Delete: boolPtr(true)},
-		Reports:     &basemodels.PermissionDetail{Read: boolPtr(true)},
-		Settings:    &basemodels.PermissionDetail{Read: boolPtr(true), Update: boolPtr(true)},
-	}
-	userPerms := basemodels.Permissions{
-		Users:     &basemodels.PermissionDetail{Read: boolPtr(true)},
-		Companies: &basemodels.PermissionDetail{Read: boolPtr(true)},
-		Reports:   &basemodels.PermissionDetail{Read: boolPtr(true)},
-	}
+	// Note: Do NOT seed model-derived permissions here. Permissions are
+	// managed by administrators via the catalog (Option A). We still create
+	// the system roles but leave permissions empty so admins can assign them.
 
 	defaults := []struct {
 		Role  basemodels.Role
 		Perms *basemodels.Permissions
 	}{
 		{Role: basemodels.Role{Name: stringPtr("super_admin"), Description: stringPtr("Super administrator"), IsActive: true}, Perms: nil},
-		{Role: basemodels.Role{Name: stringPtr("admin"), Description: stringPtr("System administrator"), IsActive: true}, Perms: &adminPerms},
-		{Role: basemodels.Role{Name: stringPtr("user"), Description: stringPtr("Default user role"), IsActive: true}, Perms: &userPerms},
+		{Role: basemodels.Role{Name: stringPtr("admin"), Description: stringPtr("System administrator"), IsActive: true}, Perms: nil},
+		{Role: basemodels.Role{Name: stringPtr("user"), Description: stringPtr("Default user role"), IsActive: true}, Perms: nil},
 		{Role: basemodels.Role{Name: stringPtr("company_owner"), Description: stringPtr("Company owner (alias)"), IsActive: true}, Perms: nil},
 		{Role: basemodels.Role{Name: stringPtr("customer"), Description: stringPtr("Customer role (limited)"), IsActive: true}, Perms: nil},
 	}
@@ -299,16 +294,16 @@ func backfillRolePermissions(db *gorm.DB) {
 				return
 			}
 			if d.Create != nil && *d.Create {
-				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "create", "allow", nil, 0))
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "create", "allow", "*", nil, 0, true))
 			}
 			if d.Read != nil && *d.Read {
-				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "read", "allow", nil, 0))
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "read", "allow", "*", nil, 0, true))
 			}
 			if d.Update != nil && *d.Update {
-				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "update", "allow", nil, 0))
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "update", "allow", "*", nil, 0, true))
 			}
 			if d.Delete != nil && *d.Delete {
-				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "delete", "allow", nil, 0))
+				rows = append(rows, basemodels.NewRolePermission(r.ID, resource, "delete", "allow", "*", nil, 0, true))
 			}
 		}
 

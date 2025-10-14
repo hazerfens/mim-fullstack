@@ -1,29 +1,22 @@
-package handlers
+﻿package handlers
 
 import (
-	"log"
+	"encoding/json"
+	"fmt"
 	"mimbackend/config"
-	models "mimbackend/internal/models/auth"
+	authmodels "mimbackend/internal/models/auth"
+	"mimbackend/internal/services"
 	"net/http"
+
+	// ... no longer using composite policy ID parsing
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
+	"gorm.io/datatypes"
 )
 
-// GetUserCustomPermissions kullanıcının özel izinlerini getirir
-// @Summary Get user custom permissions
-// @Description Get custom permissions for a specific user
-// @Tags user-permissions
-// @Accept json
-// @Produce json
-// @Param userId path string true "User ID"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]string
-// @Failure 404 {object} map[string]string
-// @Failure 500 {object} map[string]string
-// @Router /api/v1/users/{userId}/custom-permissions [get]
+// GetUserCustomPermissions kullanıcının özel izinlerini getirir (Casbin'den)
 func GetUserCustomPermissions(c *gin.Context) {
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
@@ -32,45 +25,26 @@ func GetUserCustomPermissions(c *gin.Context) {
 		return
 	}
 
-	db, err := config.NewConnection()
-	if err != nil {
+	// Return persisted UserPermission rows from DB so UI can edit/delete by UUID
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
 		return
 	}
 
-	// Check if user exists
-	var user models.User
-	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Get custom permissions
-	var permissions []models.UserPermission
-	if err := db.Where("user_id = ?", userID).Order("resource, action").Find(&permissions).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch permissions"})
+	var ups []authmodels.UserPermission
+	if err := db.Where("user_id = ?", userID).Find(&ups).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch user permissions"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":     userID,
-		"permissions": permissions,
+		"user_id":     userIDStr,
+		"permissions": ups,
 	})
 }
 
-// CreateUserCustomPermission kullanıcıya özel izin ekler
-// @Summary Create user custom permission
-// @Description Create a custom permission for a specific user
-// @Tags user-permissions
-// @Accept json
-// @Produce json
-// @Param userId path string true "User ID"
-// @Param permission body models.UserPermission true "Permission data"
-// @Success 201 {object} models.UserPermission
-// @Failure 400 {object} map[string]string
-// @Failure 404 {object} map[string]string
-// @Failure 500 {object} map[string]string
-// @Router /api/v1/users/{userId}/custom-permissions [post]
+// CreateUserCustomPermission kullanıcıya özel izin ekler (Casbin'e)
 func CreateUserCustomPermission(c *gin.Context) {
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
@@ -79,65 +53,157 @@ func CreateUserCustomPermission(c *gin.Context) {
 		return
 	}
 
-	db, err := config.NewConnection()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
-		return
+	var req struct {
+		Resource        string                      `json:"resource" binding:"required"`
+		Action          string                      `json:"action" binding:"required"`
+		Domain          string                      `json:"domain"` // optional, defaults to "*"
+		TimeRestriction *authmodels.TimeRestriction `json:"time_restriction,omitempty"`
+		AllowedIPs      []string                    `json:"allowed_ips,omitempty"`
+		IsAllowed       *bool                       `json:"is_allowed,omitempty"`
+		Priority        *int                        `json:"priority,omitempty"`
 	}
-
-	// Check if user exists
-	var user models.User
-	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	var permission models.UserPermission
-	if err := c.ShouldBindJSON(&permission); err != nil {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Set user ID and generate ID
-	permission.ID = uuid.New()
-	permission.UserID = userID
-	permission.CreatedAt = time.Now()
-	permission.UpdatedAt = time.Now()
-
-	// Check for duplicate
-	var existing models.UserPermission
-	if err := db.Where("user_id = ? AND resource = ? AND action = ?", userID, permission.Resource, permission.Action).First(&existing).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Permission already exists for this resource and action"})
+	enforcer := services.GetEnforcer()
+	if enforcer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission system not initialized"})
 		return
 	}
 
-	if err := db.Create(&permission).Error; err != nil {
-		log.Printf("❌ Error creating user permission: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create permission"})
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+	domain := req.Domain
+	if domain == "" {
+		domain = "*"
+	}
+
+	fmt.Printf("DEBUG: Creating permission for user %s: resource=%s, action=%s, domain=%s\n", userSubject, req.Resource, req.Action, domain)
+
+	// Check if policy already exists
+	existingPolicies, err := enforcer.GetFilteredPolicy(0, userSubject)
+	if err != nil {
+		fmt.Printf("DEBUG: Error checking existing policies: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing policies"})
 		return
 	}
 
-	log.Printf("✅ Created custom permission for user %s: %s.%s", userID, permission.Resource, permission.Action)
-	c.JSON(http.StatusCreated, permission)
+	fmt.Printf("DEBUG: Found %d existing policies for user\n", len(existingPolicies))
+
+	policyExists := false
+	for _, policy := range existingPolicies {
+		if len(policy) >= 4 && policy[1] == req.Resource && policy[2] == req.Action && policy[3] == domain {
+			policyExists = true
+			break
+		}
+	}
+
+	if policyExists {
+		fmt.Printf("DEBUG: Permission already exists\n")
+		c.JSON(http.StatusConflict, gin.H{"error": "Permission already exists for this user"})
+		return
+	}
+
+	// Add policy for user-specific permission
+	added, err := enforcer.AddPolicy(userSubject, req.Resource, req.Action, domain)
+	if err != nil {
+		fmt.Printf("DEBUG: Error adding policy: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user permission"})
+		return
+	}
+
+	fmt.Printf("DEBUG: Policy added: %t\n", added)
+
+	if !added {
+		fmt.Printf("DEBUG: Policy was not added (already exists or error)\n")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add permission (policy not added)"})
+		return
+	}
+
+	if err := enforcer.SavePolicy(); err != nil {
+		fmt.Printf("DEBUG: Error saving policy: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save policy"})
+		return
+	}
+
+	// Persist or upsert user permission row so UI can edit/delete later
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
+		// rollback casbin policy
+		_, _ = enforcer.RemovePolicy(userSubject, req.Resource, req.Action, domain)
+		_ = enforcer.SavePolicy()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	var allowedIPsJSON datatypes.JSON
+	if len(req.AllowedIPs) > 0 {
+		if raw, jErr := json.Marshal(req.AllowedIPs); jErr == nil {
+			allowedIPsJSON = datatypes.JSON(raw)
+		}
+	}
+
+	isAllowed := true
+	if req.IsAllowed != nil {
+		isAllowed = *req.IsAllowed
+	}
+	priority := 0
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
+
+	var existing authmodels.UserPermission
+	var persisted authmodels.UserPermission
+	if err := db.Where("user_id = ? AND resource = ? AND action = ? AND domain = ?", userID, req.Resource, req.Action, domain).First(&existing).Error; err != nil {
+		// create new
+		up := authmodels.UserPermission{
+			UserID:          userID,
+			Resource:        req.Resource,
+			Action:          req.Action,
+			Domain:          domain,
+			IsAllowed:       isAllowed,
+			TimeRestriction: req.TimeRestriction,
+			AllowedIPs:      allowedIPsJSON,
+			Priority:        priority,
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+		}
+		if err := db.Create(&up).Error; err != nil {
+			// rollback casbin policy
+			_, _ = enforcer.RemovePolicy(userSubject, req.Resource, req.Action, domain)
+			_ = enforcer.SavePolicy()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist user permission"})
+			return
+		}
+		persisted = up
+	} else {
+		// update existing
+		existing.IsAllowed = isAllowed
+		existing.TimeRestriction = req.TimeRestriction
+		existing.AllowedIPs = allowedIPsJSON
+		existing.Priority = priority
+		existing.UpdatedAt = time.Now()
+		if err := db.Save(&existing).Error; err != nil {
+			// rollback casbin policy
+			_, _ = enforcer.RemovePolicy(userSubject, req.Resource, req.Action, domain)
+			_ = enforcer.SavePolicy()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist user permission"})
+			return
+		}
+		persisted = existing
+	}
+
+	fmt.Printf("DEBUG: Policy saved successfully\n")
+
+	// Return persisted row so frontend can edit/delete by DB UUID
+	c.JSON(http.StatusCreated, gin.H{"permission": persisted, "added": added})
 }
 
-// UpdateUserCustomPermission kullanıcının özel iznini günceller
-// @Summary Update user custom permission
-// @Description Update a custom permission for a specific user
-// @Tags user-permissions
-// @Accept json
-// @Produce json
-// @Param userId path string true "User ID"
-// @Param permissionId path string true "Permission ID"
-// @Param permission body models.UserPermission true "Permission data"
-// @Success 200 {object} models.UserPermission
-// @Failure 400 {object} map[string]string
-// @Failure 404 {object} map[string]string
-// @Failure 500 {object} map[string]string
-// @Router /api/v1/users/{userId}/custom-permissions/{permissionId} [put]
+// UpdateUserCustomPermission kullanıcının özel iznini günceller (Casbin'de)
 func UpdateUserCustomPermission(c *gin.Context) {
 	userIDStr := c.Param("userId")
-	permissionIDStr := c.Param("permissionId")
+	permIDStr := c.Param("permissionId")
 
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -145,69 +211,112 @@ func UpdateUserCustomPermission(c *gin.Context) {
 		return
 	}
 
-	permissionID, err := uuid.Parse(permissionIDStr)
+	var req struct {
+		Resource        *string                     `json:"resource"`
+		Action          *string                     `json:"action"`
+		Domain          *string                     `json:"domain"`
+		TimeRestriction *authmodels.TimeRestriction `json:"time_restriction,omitempty"`
+		AllowedIPs      []string                    `json:"allowed_ips,omitempty"`
+		IsAllowed       *bool                       `json:"is_allowed,omitempty"`
+		Priority        *int                        `json:"priority,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	enforcer := services.GetEnforcer()
+	if enforcer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission system not initialized"})
+		return
+	}
+
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	// permissionId should be a UUID of the persisted user_permissions row
+	permID, err := uuid.Parse(permIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid permission ID"})
 		return
 	}
 
-	db, err := config.NewConnection()
-	if err != nil {
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
 		return
 	}
 
-	// Find existing permission
-	var permission models.UserPermission
-	if err := db.Where("id = ? AND user_id = ?", permissionID, userID).First(&permission).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch permission"})
+	var up authmodels.UserPermission
+	if err := db.Where("id = ? AND user_id = ?", permID, userID).First(&up).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found"})
+		return
+	}
+
+	oldResource := up.Resource
+	oldAction := up.Action
+	oldDomain := up.Domain
+
+	// Remove old casbin policy using persisted domain
+	_, err = enforcer.RemovePolicy(userSubject, oldResource, oldAction, oldDomain)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove old policy"})
+		return
+	}
+
+	// Update DB row
+	if req.Resource != nil {
+		up.Resource = *req.Resource
+	}
+	if req.Action != nil {
+		up.Action = *req.Action
+	}
+	if req.TimeRestriction != nil {
+		up.TimeRestriction = req.TimeRestriction
+	}
+	if len(req.AllowedIPs) > 0 {
+		if raw, jErr := json.Marshal(req.AllowedIPs); jErr == nil {
+			up.AllowedIPs = datatypes.JSON(raw)
 		}
-		return
 	}
-
-	var updateData models.UserPermission
-	if err := c.ShouldBindJSON(&updateData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	if req.Domain != nil {
+		up.Domain = *req.Domain
 	}
+	if req.IsAllowed != nil {
+		up.IsAllowed = *req.IsAllowed
+	}
+	if req.Priority != nil {
+		up.Priority = *req.Priority
+	}
+	up.UpdatedAt = time.Now()
 
-	// Update fields
-	permission.Resource = updateData.Resource
-	permission.Action = updateData.Action
-	permission.IsAllowed = updateData.IsAllowed
-	permission.TimeRestriction = updateData.TimeRestriction
-	permission.Priority = updateData.Priority
-	permission.UpdatedAt = time.Now()
-
-	if err := db.Save(&permission).Error; err != nil {
-		log.Printf("❌ Error updating user permission: %v", err)
+	if err := db.Save(&up).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update permission"})
 		return
 	}
 
-	log.Printf("✅ Updated custom permission for user %s: %s.%s", userID, permission.Resource, permission.Action)
-	c.JSON(http.StatusOK, permission)
+	// Add updated casbin policy (use persisted or provided domain)
+	pdomain := up.Domain
+	if pdomain == "" {
+		pdomain = "*"
+	}
+	_, err = enforcer.AddPolicy(userSubject, up.Resource, up.Action, pdomain)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add updated policy"})
+		return
+	}
+
+	if err := enforcer.SavePolicy(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save policy"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"permission": up})
 }
 
-// DeleteUserCustomPermission kullanıcının özel iznini siler
-// @Summary Delete user custom permission
-// @Description Delete a custom permission for a specific user
-// @Tags user-permissions
-// @Accept json
-// @Produce json
-// @Param userId path string true "User ID"
-// @Param permissionId path string true "Permission ID"
-// @Success 200 {object} map[string]string
-// @Failure 400 {object} map[string]string
-// @Failure 404 {object} map[string]string
-// @Failure 500 {object} map[string]string
-// @Router /api/v1/users/{userId}/custom-permissions/{permissionId} [delete]
+// DeleteUserCustomPermission kullanıcının özel iznini siler (Casbin'den)
 func DeleteUserCustomPermission(c *gin.Context) {
 	userIDStr := c.Param("userId")
-	permissionIDStr := c.Param("permissionId")
+	permIDStr := c.Param("permissionId")
 
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -215,35 +324,49 @@ func DeleteUserCustomPermission(c *gin.Context) {
 		return
 	}
 
-	permissionID, err := uuid.Parse(permissionIDStr)
+	permID, err := uuid.Parse(permIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid permission ID"})
 		return
 	}
 
-	db, err := config.NewConnection()
-	if err != nil {
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
 		return
 	}
 
-	// Find permission
-	var permission models.UserPermission
-	if err := db.Where("id = ? AND user_id = ?", permissionID, userID).First(&permission).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch permission"})
-		}
+	var up authmodels.UserPermission
+	if err := db.Where("id = ? AND user_id = ?", permID, userID).First(&up).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found"})
 		return
 	}
 
-	if err := db.Delete(&permission).Error; err != nil {
-		log.Printf("❌ Error deleting user permission: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete permission"})
+	enforcer := services.GetEnforcer()
+	if enforcer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission system not initialized"})
 		return
 	}
 
-	log.Printf("✅ Deleted custom permission for user %s: %s.%s", userID, permission.Resource, permission.Action)
-	c.JSON(http.StatusOK, gin.H{"message": "Permission deleted successfully"})
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	// Remove casbin policy using persisted domain
+	removed, err := enforcer.RemovePolicy(userSubject, up.Resource, up.Action, up.Domain)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove policy"})
+		return
+	}
+
+	if err := enforcer.SavePolicy(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save policy"})
+		return
+	}
+
+	// Remove DB row
+	if err := db.Where("id = ?", up.ID).Delete(&authmodels.UserPermission{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete permission record"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User permission deleted successfully", "removed": removed})
 }

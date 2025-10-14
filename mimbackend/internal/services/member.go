@@ -197,20 +197,22 @@ func AssignRoleToMember(companyID, memberID, requestUserID, newRoleID uuid.UUID)
 		return fmt.Errorf("failed to commit role change: %w", err)
 	}
 
-	// Update permission grouping: remove old, add new
+	// Update permission grouping: remove old, add new using canonical casbin subjects
 	domain := BuildDomainID(&companyID)
-	userStr := member.UserID.String()
+	userSubject := fmt.Sprintf("user:%s", member.UserID.String())
 
-	if oldRole != nil && oldRole.Name != nil {
-		if _, err := DeleteRoleForUser(userStr, *oldRole.Name, domain); err != nil {
+	if oldRole != nil {
+		oldRoleSubject := fmt.Sprintf("role:%s", oldRole.ID.String())
+		if _, err := DeleteRoleForUser(userSubject, oldRoleSubject, domain); err != nil {
 			// Log but continue
-			log.Printf("warning: failed to remove old role assignment for user %s: %v", userStr, err)
+			log.Printf("warning: failed to remove old role assignment for user %s: %v", userSubject, err)
 		}
 	}
 
-	if newRole.Name != nil {
-		if _, err := AddRoleForUser(userStr, *newRole.Name, domain); err != nil {
-			log.Printf("warning: failed to add new role assignment for user %s: %v", userStr, err)
+	if newRole.ID != uuid.Nil {
+		newRoleSubject := fmt.Sprintf("role:%s", newRole.ID.String())
+		if _, err := AddRoleForUser(userSubject, newRoleSubject, domain); err != nil {
+			log.Printf("warning: failed to add new role assignment for user %s: %v", userSubject, err)
 		}
 	}
 

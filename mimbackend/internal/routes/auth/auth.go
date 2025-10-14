@@ -31,15 +31,19 @@ func SetupAuthRoutes(router gin.IRouter) {
 	roleGroup.Use(middleware.JWTMiddleware(), middleware.AdminMiddleware())
 	{
 		roleGroup.GET("", handlers.GetRoles)
-		// System roles endpoint - only super_admin allowed
-		roleGroup.GET("/system", middleware.RoleBasedMiddleware("super_admin"), handlers.GetSystemRoles)
-		roleGroup.GET("/:id", handlers.GetRole)
+		// System roles endpoint - require admin-level access (system admin or company admin)
+		roleGroup.GET("/system", middleware.AdminMiddleware(), handlers.GetSystemRoles)
+		roleGroup.GET("/:roleId", handlers.GetRole)
 		roleGroup.POST("", handlers.CreateRole)
-		roleGroup.PUT("/:id", handlers.UpdateRole)
-		roleGroup.DELETE("/:id", handlers.DeleteRole)
+		roleGroup.PUT("/:roleId", handlers.UpdateRole)
+		roleGroup.DELETE("/:roleId", handlers.DeleteRole)
 		roleGroup.POST("/assign", handlers.AssignRoleToUser)
-		roleGroup.POST("/:userId/assign-role", handlers.AssignRoleToUser)
 		roleGroup.DELETE("/assign/:userId/:roleId", handlers.RemoveRoleFromUser)
+
+		// System role permission management (admin only)
+		roleGroup.GET("/:roleId/permissions", handlers.GetRolePermissions)
+		roleGroup.POST("/:roleId/permissions", handlers.CreateRolePermission)
+		roleGroup.PATCH("/:roleId/permissions/:permissionId", handlers.UpdateRolePermission)
 	}
 
 	// Permission catalog routes - admin-managed; check endpoint available to authenticated users
@@ -54,5 +58,17 @@ func SetupAuthRoutes(router gin.IRouter) {
 
 		// check permission for current user (or other user if admin)
 		permGroup.GET(":name/check", handlers.CheckPermissionByNameHandler)
+		// aggregated check for many permission names at once (POST body)
+		permGroup.POST("/aggregate/check", handlers.AggregatedPermissionCheck)
+	}
+
+	// User-specific permission management routes (Casbin-only)
+	userPermGroup := router.Group("/users/:userId/permissions")
+	userPermGroup.Use(middleware.JWTMiddleware(), middleware.AdminMiddleware())
+	{
+		userPermGroup.GET("", handlers.GetUserCustomPermissions)
+		userPermGroup.POST("", handlers.CreateUserCustomPermission)
+		userPermGroup.PUT("/:permissionId", handlers.UpdateUserCustomPermission)
+		userPermGroup.DELETE("/:permissionId", handlers.DeleteUserCustomPermission)
 	}
 }

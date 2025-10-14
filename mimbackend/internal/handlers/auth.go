@@ -679,6 +679,7 @@ func GetUsersPaginatedHandler(c *gin.Context) {
 		}
 	}
 	q := c.Query("q")
+	excludeRole := c.Query("exclude_role")
 
 	db, err := config.NewConnection()
 	if err != nil {
@@ -692,6 +693,10 @@ func GetUsersPaginatedHandler(c *gin.Context) {
 	if q != "" {
 		like := "%" + q + "%"
 		query = query.Where("email LIKE ? OR full_name LIKE ?", like, like)
+	}
+	if excludeRole != "" {
+		// Exclude users who have role equal to excludeRole (case-insensitive)
+		query = query.Where("LOWER(role) != ?", strings.ToLower(excludeRole))
 	}
 
 	var total int64
@@ -908,33 +913,55 @@ func GetUserPermissionsHandler(c *gin.Context) {
 		return
 	}
 
-	// Optionally limit to a specific company context
-	companyIDStr := c.Query("company_id")
+	// Determine optional company scope
 	var companyID *uuid.UUID
-	if companyIDStr != "" {
-		if cid, err := uuid.Parse(companyIDStr); err == nil {
+	if cidStr := c.Query("company_id"); cidStr != "" {
+		if cid, err := uuid.Parse(cidStr); err == nil {
 			companyID = &cid
 		}
 	}
 
-	// Build effective permissions map for the user for each defined permission in the catalog
-	catalog, perr := services.ListPermissions()
-	if perr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load permission catalog"})
-		return
+	// Fetch canonical permission list from catalog (if available)
+	var catalog []basemodels.Permission
+	if err := db.Where("is_active = ?", true).Find(&catalog).Error; err != nil {
+		// fallback to some reasonable defaults if catalog unavailable
+		catalog = []basemodels.Permission{{Name: "users"}, {Name: "companies"}, {Name: "roles"}, {Name: "permissions"}}
 	}
 
-	result := map[string]map[string]bool{}
-	for _, perm := range catalog {
-		if perm.Name == "" {
-			continue
+	resources := make([]string, 0, len(catalog))
+	for _, p := range catalog {
+		resources = append(resources, p.Name)
+	}
+
+	// Build aggregated permission map by checking Casbin + conditional rules
+	actions := []string{"create", "read", "update", "delete"}
+	perms := make(map[string]map[string]bool)
+	for _, r := range resources {
+		perms[r] = make(map[string]bool)
+		for _, a := range actions {
+			allowed, err := services.CheckUserCompanyPermissionWithContext(user.ID, r, a, companyID, c.ClientIP(), time.Now())
+			if err != nil {
+				// On error default to false for safety
+				perms[r][a] = false
+			} else {
+				perms[r][a] = allowed
+			}
 		}
-		allowed, gErr := services.GetAllowedActionsForUserForPermissionName(user.ID, perm.Name, companyID)
-		if gErr != nil {
-			log.Printf("warning: could not evaluate permission %s for user %s: %v", perm.Name, user.ID.String(), gErr)
-			continue
+	}
+
+	// Fetch persisted custom permissions for the user (DB rows)
+	var customRows []auth.UserPermission
+	if err := db.Where("user_id = ?", user.ID).Find(&customRows).Error; err != nil {
+		// log and continue
+		log.Printf("Warning: could not load user custom permissions for user %s: %v", user.ID.String(), err)
+	}
+
+	// Fetch persisted role_permissions for the user's assigned role (if present)
+	var roleRows []basemodels.RolePermission
+	if user.RoleID != nil {
+		if err := db.Where("role_id = ?", *user.RoleID).Find(&roleRows).Error; err != nil {
+			log.Printf("Warning: could not load role_permissions for role %v: %v", user.RoleID.String(), err)
 		}
-		result[perm.Name] = allowed
 	}
 
 	roleName := ""
@@ -943,7 +970,9 @@ func GetUserPermissionsHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"permissions": result,
-		"role_name":   roleName,
+		"permissions":        perms,
+		"custom_permissions": customRows,
+		"role_permissions":   roleRows,
+		"role_name":          roleName,
 	})
 }

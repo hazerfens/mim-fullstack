@@ -5,6 +5,8 @@ go 1.24.0
 toolchain go1.24.7
 
 require (
+	github.com/casbin/casbin/v2 v2.128.0
+	github.com/casbin/gorm-adapter/v3 v3.37.0
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -18,10 +20,29 @@ require (
 )
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
+	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/kr/pretty v0.3.0 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/glebarez/go-sqlite v1.20.3 // indirect
+	github.com/glebarez/sqlite v1.7.0 // indirect
+	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
+	github.com/golang-sql/sqlexp v0.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20231201235250-de7065d80cb9 // indirect
+	github.com/jackc/pgx/v5 v5.5.5 // indirect
+	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	github.com/microsoft/go-mssqldb v1.7.2 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230126093431-47fa9a501578 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+	gorm.io/driver/sqlserver v1.6.0 // indirect
+	gorm.io/plugin/dbresolver v1.6.0 // indirect
+	modernc.org/libc v1.22.2 // indirect
+	modernc.org/mathutil v1.5.0 // indirect
+	modernc.org/memory v1.5.0 // indirect
+	modernc.org/sqlite v1.20.3 // indirect
 )
 
 require (

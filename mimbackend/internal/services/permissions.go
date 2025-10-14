@@ -1,25 +1,132 @@
-package services
+﻿package services
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"mimbackend/internal/cache"
+	"mimbackend/config"
+	"net"
 	"strings"
 	"time"
 
-	"mimbackend/config"
 	authmodels "mimbackend/internal/models/auth"
 	basemodels "mimbackend/internal/models/basemodels"
-	companymodels "mimbackend/internal/models/company"
 
+	"github.com/casbin/casbin/v2"
+	gormadapter "github.com/casbin/gorm-adapter/v3"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/datatypes"
 	"gorm.io/gorm/clause"
 )
 
-// Permissions service: provides DB-backed permission checks and
-// compatibility shims for legacy Casbin helper names. No Casbin dependency.
+var (
+	enforcer    *casbin.Enforcer
+	redisClient *redis.Client
+)
+
+// initRedisClient initializes Redis client for caching
+func initRedisClient() {
+	redisClient = config.GetRedisClient()
+}
+
+// getCacheKey generates cache key for permission check
+func getCacheKey(user, resource, action, domain string) string {
+	return fmt.Sprintf("casbin:perm:%s:%s:%s:%s", user, resource, action, domain)
+}
+
+// getCachedPermission checks Redis cache for permission result
+func getCachedPermission(user, resource, action, domain string) (bool, bool) {
+	if redisClient == nil {
+		return false, false // not cached
+	}
+
+	key := getCacheKey(user, resource, action, domain)
+	val, err := redisClient.Get(context.Background(), key).Result()
+	if err != nil {
+		return false, false // not cached
+	}
+
+	// Parse cached result
+	var result bool
+	if err := json.Unmarshal([]byte(val), &result); err != nil {
+		return false, false // invalid cache
+	}
+
+	return result, true // cached
+}
+
+// setCachedPermission caches permission result in Redis
+func setCachedPermission(user, resource, action, domain string, result bool) {
+	if redisClient == nil {
+		return
+	}
+
+	key := getCacheKey(user, resource, action, domain)
+	data, _ := json.Marshal(result)
+
+	redisClient.Set(context.Background(), key, data, 10*time.Minute) // 10 minute cache
+}
+
+// invalidateUserCache clears all cached permissions for a user
+func invalidateUserCache(user string) {
+	if redisClient == nil {
+		return
+	}
+
+	// Use pattern matching to delete all user-related cache keys
+	pattern := fmt.Sprintf("casbin:perm:%s:*", user)
+	keys, err := redisClient.Keys(context.Background(), pattern).Result()
+	if err == nil && len(keys) > 0 {
+		redisClient.Del(context.Background(), keys...)
+	}
+}
+
+// InitCasbin initializes the Casbin enforcer with GORM adapter and Redis cache
+func InitCasbin() error {
+	db, err := config.NewConnection()
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// Create GORM adapter for persistence
+	adapter, err := gormadapter.NewAdapterByDB(db)
+	if err != nil {
+		return fmt.Errorf("failed to create GORM adapter: %w", err)
+	}
+
+	// Create enforcer with model
+	e, err := casbin.NewEnforcer("config/casbin_model.conf", adapter)
+	if err != nil {
+		return fmt.Errorf("failed to create enforcer: %w", err)
+	}
+
+	enforcer = e
+
+	// Initialize Redis client for caching
+	initRedisClient()
+
+	// Load policies
+	if err := enforcer.LoadPolicy(); err != nil {
+		return fmt.Errorf("failed to load policy: %w", err)
+	}
+
+	// Check if Redis is available for caching
+	if redisClient != nil {
+		log.Println("✅ Casbin initialized with Redis cache support")
+	} else {
+		log.Println("⚠️  Redis not available, Casbin running without cache")
+	}
+
+	log.Println("✅ Casbin ABAC enforcer initialized successfully")
+	return nil
+}
+
+// GetEnforcer returns the Casbin enforcer instance
+func GetEnforcer() *casbin.Enforcer {
+	return enforcer
+}
 
 // BuildDomainID returns a domain string used by older callers
 func BuildDomainID(companyID *uuid.UUID) string {
@@ -45,786 +152,872 @@ func ParseDomainID(domain string) (*uuid.UUID, error) {
 	return &cid, nil
 }
 
-// AddPolicy is a no-op (policy management removed)
+// AddPolicy adds a policy rule to Casbin and invalidates related cache
 func AddPolicy(subject, object, action, domain string) (bool, error) {
-	log.Printf("permissions: AddPolicy ignored: %s %s %s %s", subject, object, action, domain)
-	return true, nil
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
+	}
+
+	result, err := enforcer.AddPolicy(subject, object, action, domain)
+	if err != nil {
+		return false, err
+	}
+
+	// Invalidate cache for affected users
+	if strings.HasPrefix(subject, "user:") {
+		invalidateUserCache(subject)
+	}
+
+	// If the subject is a role, invalidate cache for all users who have this role
+	if strings.HasPrefix(subject, "role:") {
+		if enforcer != nil {
+			if users, err := enforcer.GetUsersForRole(subject, domain); err == nil {
+				for _, u := range users {
+					invalidateUserCache(u)
+				}
+				log.Printf("AddPolicy: invalidated cache for %d users of role %s", len(users), subject)
+			} else {
+				// fallback: clear all user caches for safety
+				if redisClient != nil {
+					pattern := "casbin:perm:*"
+					keys, _ := redisClient.Keys(context.Background(), pattern).Result()
+					if len(keys) > 0 {
+						redisClient.Del(context.Background(), keys...)
+					}
+				}
+				log.Printf("AddPolicy: failed to enumerate users for role %s, cleared global cache as fallback: %v", subject, err)
+			}
+		}
+	}
+
+	return result, nil
 }
 
-// RemovePolicy is a no-op
+// RemovePolicy removes a policy rule from Casbin and invalidates related cache
 func RemovePolicy(subject, object, action, domain string) (bool, error) {
-	log.Printf("permissions: RemovePolicy ignored: %s %s %s %s", subject, object, action, domain)
-	return true, nil
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
+	}
+
+	result, err := enforcer.RemovePolicy(subject, object, action, domain)
+	if err != nil {
+		return false, err
+	}
+
+	// Invalidate cache for affected users
+	if strings.HasPrefix(subject, "user:") {
+		invalidateUserCache(subject)
+	}
+
+	// If the subject is a role, invalidate cache for all users who have this role
+	if strings.HasPrefix(subject, "role:") {
+		if enforcer != nil {
+			if users, err := enforcer.GetUsersForRole(subject, domain); err == nil {
+				for _, u := range users {
+					invalidateUserCache(u)
+				}
+				log.Printf("RemovePolicy: invalidated cache for %d users of role %s", len(users), subject)
+			} else {
+				// fallback: clear all user caches for safety
+				if redisClient != nil {
+					pattern := "casbin:perm:*"
+					keys, _ := redisClient.Keys(context.Background(), pattern).Result()
+					if len(keys) > 0 {
+						redisClient.Del(context.Background(), keys...)
+					}
+				}
+				log.Printf("RemovePolicy: failed to enumerate users for role %s, cleared global cache as fallback: %v", subject, err)
+			}
+		}
+	}
+
+	return result, nil
 }
 
-// AddRoleForUser is a shim; role assignment is persisted elsewhere (user.Role / company members)
+// AddRoleForUser adds a role for a user in a domain
 func AddRoleForUser(user, role, domain string) (bool, error) {
-	log.Printf("permissions: AddRoleForUser (ignored): user=%s role=%s domain=%s", user, role, domain)
-	return true, nil
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
+	}
+	return enforcer.AddRoleForUser(user, role, domain)
 }
 
-// DeleteRoleForUser is a shim
+// DeleteRoleForUser deletes a role for a user in a domain
 func DeleteRoleForUser(user, role, domain string) (bool, error) {
-	log.Printf("permissions: DeleteRoleForUser (ignored): user=%s role=%s domain=%s", user, role, domain)
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
+	}
+	return enforcer.DeleteRoleForUser(user, role, domain)
+}
+
+// GetRolesForUser gets roles for a user in a domain
+func GetRolesForUser(user, domain string) ([]string, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
+	}
+	return enforcer.GetRolesForUser(user, domain)
+}
+
+// GetUsersForRole gets users for a role in a domain
+func GetUsersForRole(role, domain string) ([]string, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
+	}
+	return enforcer.GetUsersForRole(role, domain)
+}
+
+// GetAllPolicies gets all policies
+func GetAllPolicies() ([][]string, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
+	}
+	return enforcer.GetPolicy()
+}
+
+// ClearAllPolicies clears all policies
+func ClearAllPolicies() error {
+	enforcer.ClearPolicy()
+	return nil
+} // InitializeDefaultPolicies initializes default policies for the system
+func InitializeDefaultPolicies() error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	// System admin policies
+	enforcer.AddPolicy("admin", "*", "*", "*")
+	enforcer.AddPolicy("super_admin", "*", "*", "*")
+
+	// User management policies
+	enforcer.AddPolicy("admin", "users", "read", "*")
+	enforcer.AddPolicy("admin", "users", "create", "*")
+	enforcer.AddPolicy("admin", "users", "update", "*")
+	enforcer.AddPolicy("admin", "users", "delete", "*")
+
+	// Company management policies
+	enforcer.AddPolicy("admin", "companies", "read", "*")
+	enforcer.AddPolicy("admin", "companies", "create", "*")
+	enforcer.AddPolicy("admin", "companies", "update", "*")
+	enforcer.AddPolicy("admin", "companies", "delete", "*")
+
+	// Role management policies
+	enforcer.AddPolicy("admin", "roles", "read", "*")
+	enforcer.AddPolicy("admin", "roles", "create", "*")
+	enforcer.AddPolicy("admin", "roles", "update", "*")
+	enforcer.AddPolicy("admin", "roles", "delete", "*")
+
+	// Permission management policies
+	enforcer.AddPolicy("admin", "permissions", "read", "*")
+	enforcer.AddPolicy("admin", "permissions", "create", "*")
+	enforcer.AddPolicy("admin", "permissions", "update", "*")
+	enforcer.AddPolicy("admin", "permissions", "delete", "*")
+
+	// Basic user policies
+	enforcer.AddPolicy("user", "users", "read", "*")
+	enforcer.AddPolicy("user", "companies", "read", "*")
+
+	// Company employee policies (company-scoped)
+	enforcer.AddPolicy("company_employee", "companies", "read", "company:*")
+	enforcer.AddPolicy("company_employee", "companies", "update", "company:*")
+
+	// Company manager policies
+	enforcer.AddPolicy("company_manager", "companies", "read", "company:*")
+	enforcer.AddPolicy("company_manager", "companies", "update", "company:*")
+	enforcer.AddPolicy("company_manager", "companies", "delete", "company:*")
+	enforcer.AddPolicy("company_manager", "users", "read", "company:*")
+	enforcer.AddPolicy("company_manager", "users", "create", "company:*")
+	enforcer.AddPolicy("company_manager", "users", "update", "company:*")
+
+	// Save policies to database
+	if err := enforcer.SavePolicy(); err != nil {
+		return fmt.Errorf("failed to save default policies: %w", err)
+	}
+
+	log.Println("Default ABAC policies initialized")
+	return nil
+}
+
+// UpdatePoliciesForRole updates policies when a role is modified
+func UpdatePoliciesForRole(role interface{}) error {
+	// This is a placeholder - role policy updates would be implemented here
+	log.Printf("UpdatePoliciesForRole called with: %v", role)
+	return nil
+}
+
+// RemovePoliciesForRole removes all policies for a specific role
+func RemovePoliciesForRole(roleName string, companyID *uuid.UUID) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	domain := BuildDomainID(companyID)
+
+	// Remove all policies where subject matches the role
+	policies, err := enforcer.GetPolicy()
+	if err != nil {
+		return err
+	}
+	var toRemove [][]string
+
+	for _, policy := range policies {
+		if len(policy) >= 4 && policy[0] == roleName && policy[3] == domain {
+			toRemove = append(toRemove, policy)
+		}
+	}
+
+	for _, policy := range toRemove {
+		enforcer.RemovePolicy(policy[0], policy[1], policy[2], policy[3])
+	}
+
+	return enforcer.SavePolicy()
+}
+
+// RemovePoliciesForCompany removes all policies for a company
+func RemovePoliciesForCompany(companyID uuid.UUID) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	domain := fmt.Sprintf("company:%s", companyID.String())
+
+	// Remove all policies for this company domain
+	policies, err := enforcer.GetPolicy()
+	if err != nil {
+		return err
+	}
+	var toRemove [][]string
+
+	for _, policy := range policies {
+		if len(policy) >= 4 && policy[3] == domain {
+			toRemove = append(toRemove, policy)
+		}
+	}
+
+	for _, policy := range toRemove {
+		enforcer.RemovePolicy(policy[0], policy[1], policy[2], policy[3])
+	}
+
+	return enforcer.SavePolicy()
+}
+
+// GetAllowedActionsForUserForPermissionName returns allowed actions for a user on a specific permission
+func GetAllowedActionsForUserForPermissionName(userID uuid.UUID, permissionName string, companyID *uuid.UUID) (map[string]bool, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
+	}
+
+	domain := BuildDomainID(companyID)
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	actions := []string{"create", "read", "update", "delete"}
+	result := make(map[string]bool)
+
+	for _, action := range actions {
+		allowed, err := enforcer.Enforce(userSubject, permissionName, action, domain)
+		if err != nil {
+			log.Printf("Error checking permission %s:%s for user %s: %v", permissionName, action, userID.String(), err)
+			result[action] = false
+		} else {
+			result[action] = allowed
+		}
+	}
+
+	return result, nil
+}
+
+// CheckUserCustomPermissions checks user's custom permissions
+func CheckUserCustomPermissions(userID uuid.UUID, resource, action string) (bool, bool, error) {
+	if enforcer == nil {
+		return false, false, fmt.Errorf("enforcer not initialized")
+	}
+
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	// Check system-wide permission first
+	systemAllowed, err := enforcer.Enforce(userSubject, resource, action, "*")
+	if err != nil {
+		return false, false, err
+	}
+
+	return systemAllowed, false, nil
+}
+
+// evaluateConditions evaluates a RolePermission or UserPermission conditions JSON
+// conditions JSON may contain an optional time_restriction (matching authmodels.TimeRestriction)
+// and an optional allowed_ips array of IPs or CIDRs.
+func evaluateConditions(conds datatypes.JSON, clientIP string, now time.Time) (bool, error) {
+	if len(conds) == 0 {
+		return true, nil
+	}
+
+	// Generic payload supporting nested time_restriction and allowed_ips
+	var payload struct {
+		TimeRestriction *authmodels.TimeRestriction `json:"time_restriction,omitempty"`
+		AllowedIPs      []string                    `json:"allowed_ips,omitempty"`
+	}
+
+	if err := json.Unmarshal(conds, &payload); err != nil {
+		return false, fmt.Errorf("invalid conditions JSON: %w", err)
+	}
+
+	// Time restriction check
+	if payload.TimeRestriction != nil {
+		if !payload.TimeRestriction.IsAllowedAtTime(now) {
+			return false, nil
+		}
+	}
+
+	// IP restriction check
+	if len(payload.AllowedIPs) > 0 {
+		if clientIP == "" {
+			// No IP available, deny by default when IP restriction exists
+			return false, nil
+		}
+		ip := net.ParseIP(clientIP)
+		if ip == nil {
+			return false, nil
+		}
+
+		matched := false
+		for _, entry := range payload.AllowedIPs {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			// Try CIDR first
+			if _, ipnet, err := net.ParseCIDR(entry); err == nil {
+				if ipnet.Contains(ip) {
+					matched = true
+					break
+				}
+				continue
+			}
+			// Try plain IP
+			if p := net.ParseIP(entry); p != nil {
+				if p.Equal(ip) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+
 	return true, nil
 }
 
-// GetRolesForUser returns role names for a user, considering system role and active company membership roles
-func GetRolesForUser(user, domain string) ([]string, error) {
-	// Accept both 'user:<uuid>' and raw uuid
-	user = strings.TrimPrefix(user, "user:")
-	uid, err := uuid.Parse(user)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user id: %w", err)
+// CheckUserCompanyPermissionWithContext checks permissions for a user and optional company domain
+// while also evaluating time/IP conditions stored in persisted role_permissions and user_permissions.
+func CheckUserCompanyPermissionWithContext(userID uuid.UUID, resource, action string, companyID *uuid.UUID, clientIP string, now time.Time) (bool, error) {
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
 	}
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
+
+	domain := BuildDomainID(companyID)
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	// Database connection for persisted role_permissions/user_permissions
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
+		return false, dbErr
 	}
-	var u authmodels.User
-	if err := db.Preload("RoleModel").Where("id = ?", uid).First(&u).Error; err != nil {
-		return nil, err
-	}
-	roles := []string{}
-	if u.Role != "" {
-		roles = append(roles, u.Role)
-	}
-	if domain != "*" && strings.HasPrefix(domain, "company:") {
-		if p := strings.Split(domain, ":"); len(p) == 2 {
-			if cid, pErr := uuid.Parse(p[1]); pErr == nil {
-				var cm companymodels.CompanyMember
-				if err := db.Preload("Role").Where("user_id = ? AND company_id = ? AND is_active = ?", uid, cid, true).First(&cm).Error; err == nil {
-					if cm.Role != nil && cm.Role.Name != nil {
-						roles = append(roles, *cm.Role.Name)
+
+	// 1) Check explicit user_permissions table rows (time-restricted user-level overrides)
+	var ups []authmodels.UserPermission
+	if err := db.Where("user_id = ? AND resource = ? AND action = ? AND is_allowed = ?", userID, resource, action, true).Find(&ups).Error; err == nil {
+		for _, up := range ups {
+			// time restriction check
+			if up.TimeRestriction != nil && !up.TimeRestriction.IsAllowedAtTime(now) {
+				continue
+			}
+			// allowed_ips in UserPermission is stored as JSON in AllowedIPs field (if present)
+			if len(up.AllowedIPs) > 0 {
+				// AllowedIPs stored as []byte JSON or string slice depending on model; try to unmarshal
+				var ips []string
+				if err := json.Unmarshal(up.AllowedIPs, &ips); err == nil {
+					// evaluate ips
+					payload := struct {
+						AllowedIPs []string `json:"allowed_ips,omitempty"`
+					}{AllowedIPs: ips}
+					// reuse evaluateConditions by marshalling payload
+					raw, _ := json.Marshal(payload)
+					ok, _ := evaluateConditions(datatypes.JSON(raw), clientIP, now)
+					if ok {
+						return true, nil
 					}
 				}
+			} else {
+				// No IP restriction, time check already passed -> allow
+				return true, nil
 			}
 		}
 	}
-	return roles, nil
-}
 
-// GetUsersForRole returns user IDs (string) for a role in a domain
-func GetUsersForRole(role, domain string) ([]string, error) {
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	// System-level users
-	var r basemodels.Role
-	if err := db.Where("name = ? AND company_id IS NULL", role).First(&r).Error; err == nil {
-		var users []authmodels.User
-		if err := db.Where("role_id = ?", r.ID).Find(&users).Error; err == nil {
-			for _, u := range users {
-				ids = append(ids, u.ID.String())
-			}
-		}
-	}
-	// Company members
-	if domain == "*" {
-		var members []companymodels.CompanyMember
-		if err := db.Preload("Role").Where("is_active = ?", true).Find(&members).Error; err == nil {
-			for _, m := range members {
-				if m.Role != nil && m.Role.Name != nil && *m.Role.Name == role {
-					ids = append(ids, m.UserID.String())
-				}
-			}
-		}
-	} else if strings.HasPrefix(domain, "company:") {
-		parts := strings.Split(domain, ":")
-		if len(parts) == 2 {
-			if cid, pErr := uuid.Parse(parts[1]); pErr == nil {
-				var members []companymodels.CompanyMember
-				if err := db.Preload("Role").Where("company_id = ?", cid).Find(&members).Error; err == nil {
-					for _, m := range members {
-						if m.Role != nil && m.Role.Name != nil && *m.Role.Name == role {
-							ids = append(ids, m.UserID.String())
-						}
-					}
-				}
-			}
-		}
-	}
-	return ids, nil
-}
-
-// GetAllPolicies returns empty set now
-func GetAllPolicies() ([][]string, error) {
-	return [][]string{}, nil
-}
-
-// ClearPolicy no-op
-func ClearPolicy() error {
-	log.Println("permissions: ClearPolicy ignored")
-	return nil
-}
-
-// InitializeDefaultPolicies no-op
-func InitializeDefaultPolicies() error {
-	log.Println("permissions: InitializeDefaultPolicies ignored")
-	return nil
-}
-
-// UpdatePoliciesForRole no-op replacement (was UpdateCasbinPoliciesForRole)
-func UpdatePoliciesForRole(role basemodels.Role) error {
-	log.Printf("permissions: UpdatePoliciesForRole ignored for role=%v", role.ID)
-	return nil
-}
-
-// RemovePoliciesForRole no-op replacement (was RemoveCasbinPoliciesForRole)
-func RemovePoliciesForRole(roleName string, companyID *uuid.UUID) error {
-	log.Printf("permissions: RemovePoliciesForRole ignored for role=%s company=%v", roleName, companyID)
-	return nil
-}
-
-// RemovePoliciesForCompany no-op replacement (was RemoveCasbinPoliciesForCompany)
-func RemovePoliciesForCompany(companyID uuid.UUID) error {
-	log.Printf("permissions: RemovePoliciesForCompany ignored for company=%s", companyID.String())
-	return nil
-}
-
-// (role existence checks handled directly where needed)
-
-// LoadRolePermissionsByID loads a role's permissions (parsed) using Redis cache
-func LoadRolePermissionsByID(roleID uuid.UUID) (*basemodels.Permissions, error) {
-	ctx := context.Background()
-	// Try cache first
-	if data, err := cache.GetRolePermissionsCache(ctx, roleID); err == nil && len(data) > 0 {
-		var p basemodels.Permissions
-		if jErr := json.Unmarshal(data, &p); jErr == nil {
-			return &p, nil
-		}
-		// fallthrough to DB on unmarshal error
-	}
-
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-
-	// Prefer normalized role_permissions rows when present
-	var rpRows []basemodels.RolePermission
-	if err := db.Where("role_id = ?", roleID).Find(&rpRows).Error; err == nil && len(rpRows) > 0 {
-		p := rolePermissionsToPermissions(rpRows)
-		if raw, jErr := json.Marshal(p); jErr == nil {
-			_ = cache.SetRolePermissionsCache(ctx, roleID, raw, time.Hour)
-			return &p, nil
-		}
-		return &p, nil
-	}
-
-	// Fallback: read Role.Permissions JSON blob
-	var role basemodels.Role
-	if err := db.Where("id = ?", roleID).First(&role).Error; err != nil {
-		return nil, err
-	}
-
-	var p basemodels.Permissions
-	if role.Permissions != nil && len([]byte(*role.Permissions)) > 0 {
-		raw := []byte(*role.Permissions)
-		if jErr := json.Unmarshal(raw, &p); jErr == nil {
-			// cache the raw bytes for faster subsequent lookups
-			_ = cache.SetRolePermissionsCache(ctx, roleID, raw, time.Hour)
-			return &p, nil
-		}
-	}
-	return &p, nil
-}
-
-// Helper to convert role_permissions rows into Permissions struct
-func rolePermissionsToPermissions(rows []basemodels.RolePermission) basemodels.Permissions {
-	p := basemodels.Permissions{Custom: map[string]*basemodels.PermissionDetail{}}
-	for _, r := range rows {
-		res := strings.ToLower(r.Resource)
-		act := strings.ToLower(r.Action)
-
-		// helper to apply action to a *PermissionDetail pointer (allocate if nil)
-		applyToField := func(d **basemodels.PermissionDetail, action string) {
-			if *d == nil {
-				*d = &basemodels.PermissionDetail{}
-			}
-			switch action {
-			case "create":
-				v := true
-				(*d).Create = &v
-			case "read":
-				v := true
-				(*d).Read = &v
-			case "update":
-				v := true
-				(*d).Update = &v
-			case "delete":
-				v := true
-				(*d).Delete = &v
-			case "*":
-				v := true
-				(*d).Create = &v
-				(*d).Read = &v
-				(*d).Update = &v
-				(*d).Delete = &v
-			}
-		}
-
-		applyToDetail := func(d *basemodels.PermissionDetail, action string) {
-			if d == nil {
-				return
-			}
-			switch action {
-			case "create":
-				v := true
-				d.Create = &v
-			case "read":
-				v := true
-				d.Read = &v
-			case "update":
-				v := true
-				d.Update = &v
-			case "delete":
-				v := true
-				d.Delete = &v
-			case "*":
-				v := true
-				d.Create = &v
-				d.Read = &v
-				d.Update = &v
-				d.Delete = &v
-			}
-		}
-
-		switch res {
-		case "users":
-			applyToField(&p.Users, act)
-		case "companies":
-			applyToField(&p.Companies, act)
-		case "branches":
-			applyToField(&p.Branches, act)
-		case "departments":
-			applyToField(&p.Departments, act)
-		case "roles":
-			applyToField(&p.Roles, act)
-		case "reports":
-			applyToField(&p.Reports, act)
-		case "settings":
-			applyToField(&p.Settings, act)
-		default:
-			if p.Custom == nil {
-				p.Custom = map[string]*basemodels.PermissionDetail{}
-			}
-			d := p.Custom[res]
-			if d == nil {
-				d = &basemodels.PermissionDetail{}
-				p.Custom[res] = d
-			}
-			applyToDetail(d, act)
-		}
-	}
-	return p
-}
-
-// UpsertRolePermissionsFromPermissions replaces all role_permissions rows for a role
-// with rows derived from the provided Permissions struct. This keeps normalized
-// permission rows in-sync when the role JSON is updated via the admin UI.
-func UpsertRolePermissionsFromPermissions(roleID uuid.UUID, p *basemodels.Permissions) error {
-	db, err := config.NewConnection()
-	if err != nil {
-		return err
-	}
-
-	tx := db.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	if err := tx.Where("role_id = ?", roleID).Delete(&basemodels.RolePermission{}).Error; err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	var rows []basemodels.RolePermission
-	if p != nil {
-		add := func(resource string, d *basemodels.PermissionDetail) {
-			if d == nil {
-				return
-			}
-			if d.Create != nil && *d.Create {
-				rows = append(rows, basemodels.NewRolePermission(roleID, resource, "create", "allow", nil, 0))
-			}
-			if d.Read != nil && *d.Read {
-				rows = append(rows, basemodels.NewRolePermission(roleID, resource, "read", "allow", nil, 0))
-			}
-			if d.Update != nil && *d.Update {
-				rows = append(rows, basemodels.NewRolePermission(roleID, resource, "update", "allow", nil, 0))
-			}
-			if d.Delete != nil && *d.Delete {
-				rows = append(rows, basemodels.NewRolePermission(roleID, resource, "delete", "allow", nil, 0))
-			}
-		}
-		add("users", p.Users)
-		add("companies", p.Companies)
-		add("branches", p.Branches)
-		add("departments", p.Departments)
-		add("roles", p.Roles)
-		add("reports", p.Reports)
-		add("settings", p.Settings)
-		for k, v := range p.Custom {
-			add(k, v)
-		}
-	}
-
-	if len(rows) > 0 {
-		if err := tx.Create(&rows).Error; err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		return err
-	}
-
-	// Invalidate cache
-	_ = cache.InvalidateRolePermissionsCache(context.Background(), roleID)
-	return nil
-}
-
-// DeleteRolePermissionsByRoleID removes all normalized permission rows for a role
-func DeleteRolePermissionsByRoleID(roleID uuid.UUID) error {
-	db, err := config.NewConnection()
-	if err != nil {
-		return err
-	}
-	if err := db.Where("role_id = ?", roleID).Delete(&basemodels.RolePermission{}).Error; err != nil {
-		return err
-	}
-	return cache.InvalidateRolePermissionsCache(context.Background(), roleID)
-}
-
-// CopyRolePermissions duplicates all role_permissions rows from a source role
-// into a destination role. Used when cloning global role templates into
-// company-scoped roles so the normalized rows are also copied.
-func CopyRolePermissions(srcRoleID, dstRoleID uuid.UUID) error {
-	db, err := config.NewConnection()
-	if err != nil {
-		return err
-	}
-	var rows []basemodels.RolePermission
-	if err := db.Where("role_id = ?", srcRoleID).Find(&rows).Error; err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	var dst []basemodels.RolePermission
-	for _, r := range rows {
-		dst = append(dst, basemodels.NewRolePermission(dstRoleID, r.Resource, r.Action, r.Effect, []byte(r.Conditions), r.Priority))
-	}
-	if err := db.Create(&dst).Error; err != nil {
-		return err
-	}
-	// Invalidate destination cache
-	_ = cache.InvalidateRolePermissionsCache(context.Background(), dstRoleID)
-	return nil
-}
-
-// ListPermissions returns the permission catalog, preferring Redis cache.
-func ListPermissions() ([]basemodels.Permission, error) {
-	ctx := context.Background()
-	if data, err := cache.GetPermissionsCatalogAllCache(ctx); err == nil && len(data) > 0 {
-		var perms []basemodels.Permission
-		if jErr := json.Unmarshal(data, &perms); jErr == nil {
-			return perms, nil
-		}
-	}
-
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-	var perms []basemodels.Permission
-	if err := db.Where("is_active = ?", true).Find(&perms).Error; err != nil {
-		return nil, err
-	}
-	if raw, jErr := json.Marshal(perms); jErr == nil {
-		_ = cache.SetPermissionsCatalogAllCache(ctx, raw, time.Minute*10)
-	}
-	return perms, nil
-}
-
-// ListAllPermissions returns the permission catalog including inactive entries.
-func ListAllPermissions() ([]basemodels.Permission, error) {
-	ctx := context.Background()
-	if data, err := cache.GetPermissionsCatalogCache(ctx); err == nil && len(data) > 0 {
-		var perms []basemodels.Permission
-		if jErr := json.Unmarshal(data, &perms); jErr == nil {
-			return perms, nil
-		}
-	}
-
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-	var perms []basemodels.Permission
-	if err := db.Find(&perms).Error; err != nil {
-		return nil, err
-	}
-	if raw, jErr := json.Marshal(perms); jErr == nil {
-		_ = cache.SetPermissionsCatalogCache(ctx, raw, time.Minute*10)
-	}
-	return perms, nil
-}
-
-// CreatePermission creates a new permission catalog entry and invalidates cache.
-func CreatePermission(p basemodels.Permission) (*basemodels.Permission, error) {
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-	if err := db.Create(&p).Error; err != nil {
-		return nil, err
-	}
-	_ = cache.InvalidatePermissionsCatalogCache(context.Background())
-	_ = cache.InvalidatePermissionsCatalogAllCache(context.Background())
-	// After creating a permission catalog entry, optionally create default
-	// bindings for common roles so admin UX has sensible defaults. This is
-	// intentionally conservative: it only affects global roles (company_id IS NULL).
-	if err := addDefaultBindingsForNewPermission(p.Name); err != nil {
-		log.Printf("warning: failed to add default bindings for permission %s: %v", p.Name, err)
-	}
-	return &p, nil
-}
-
-// addDefaultBindingsForNewPermission will grant default actions for newly
-// created permission names to common roles (admin/company_owner/user) at the
-// global scope. It inserts normalized role_permissions rows while avoiding
-// duplicates via ON CONFLICT DO NOTHING.
-func addDefaultBindingsForNewPermission(resource string) error {
-	db, err := config.NewConnection()
-	if err != nil {
-		return err
-	}
-
-	// Which roles get which default actions
-	defaultMap := map[string][]string{
-		"admin":         {"create", "read", "update", "delete"},
-		"company_owner": {"create", "read", "update", "delete"},
-		"user":          {"read"},
-	}
-
-	var roles []basemodels.Role
-	if err := db.Where("company_id IS NULL AND name IN ? AND is_active = ?", []string{"admin", "company_owner", "user"}, true).Find(&roles).Error; err != nil {
-		return err
+	// 2) Check role-based persisted role_permissions
+	roles, rErr := enforcer.GetRolesForUser(userSubject, domain)
+	if rErr != nil {
+		return false, rErr
 	}
 
 	for _, r := range roles {
-		// Determine actions by role name
-		var roleActions []string
-		if r.Name != nil {
-			if a, exists := defaultMap[*r.Name]; exists {
-				roleActions = a
-			}
-		}
-		if len(roleActions) == 0 {
-			continue
-		}
-
-		var rows []basemodels.RolePermission
-		for _, act := range roleActions {
-			rows = append(rows, basemodels.NewRolePermission(r.ID, resource, act, "allow", nil, 0))
-		}
-
-		// Insert rows ignoring conflicts (we added unique index on role+resource+action)
-		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
-			log.Printf("warning: failed to insert default role_permissions for role %s resource %s: %v", r.ID.String(), resource, err)
-			continue
-		}
-		// Invalidate role cache
-		_ = cache.InvalidateRolePermissionsCache(context.Background(), r.ID)
-	}
-	return nil
-}
-
-// UpdatePermission updates an existing catalog entry and invalidates cache.
-func UpdatePermission(name string, patch map[string]interface{}) (*basemodels.Permission, error) {
-	db, err := config.NewConnection()
-	if err != nil {
-		return nil, err
-	}
-	var p basemodels.Permission
-	if err := db.Where("name = ?", name).First(&p).Error; err != nil {
-		return nil, err
-	}
-	// Normalize common fields that may arrive as strings from JSON
-	if v, ok := patch["is_active"]; ok {
-		switch vv := v.(type) {
-		case bool:
-			// ok
-		case string:
-			// convert string to bool if possible
-			if strings.ToLower(vv) == "true" {
-				patch["is_active"] = true
-			} else if strings.ToLower(vv) == "false" {
-				patch["is_active"] = false
-			}
-		}
-	}
-	if err := db.Model(&p).Updates(patch).Error; err != nil {
-		return nil, err
-	}
-	_ = cache.InvalidatePermissionsCatalogCache(context.Background())
-	_ = cache.InvalidatePermissionsCatalogAllCache(context.Background())
-	// Reload to return the fresh state
-	if err := db.Where("id = ?", p.ID).First(&p).Error; err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// DeletePermission deletes a permission catalog entry (soft delete if using GORM) and invalidates cache.
-func DeletePermission(name string) error {
-	db, err := config.NewConnection()
-	if err != nil {
-		return err
-	}
-	if err := db.Where("name = ?", name).Delete(&basemodels.Permission{}).Error; err != nil {
-		return err
-	}
-	_ = cache.InvalidatePermissionsCatalogCache(context.Background())
-	_ = cache.InvalidatePermissionsCatalogAllCache(context.Background())
-	return nil
-}
-
-// GetAllowedActionsForUserForPermissionName returns allowed CRUD actions for a user on a named permission.
-func GetAllowedActionsForUserForPermissionName(userID uuid.UUID, permissionName string, companyID *uuid.UUID) (map[string]bool, error) {
-	actions := []string{"create", "read", "update", "delete"}
-	allowed := map[string]bool{}
-	for _, a := range actions {
-		// Check user-specific overrides first
-		if val, isCustom, err := CheckUserCustomPermissions(userID, permissionName, a); err == nil && isCustom {
-			allowed[a] = val
-			continue
-		}
-
-		// Otherwise check company-scoped role first
-		db, err := config.NewConnection()
-		if err != nil {
-			return nil, err
-		}
-		var user authmodels.User
-		if err := db.Preload("RoleModel").Where("id = ?", userID).First(&user).Error; err != nil {
-			return nil, err
-		}
-
-		if user.Role == "super_admin" {
-			allowed[a] = true
-			continue
-		}
-
-		found := false
-		if companyID != nil {
-			var cm companymodels.CompanyMember
-			if err := db.Preload("Role").Where("user_id = ? AND company_id = ? AND is_active = ?", userID, *companyID, true).First(&cm).Error; err == nil {
-				if cm.Role != nil {
-					if perm, lErr := LoadRolePermissionsByID(cm.Role.ID); lErr == nil && perm != nil {
-						if resourcePermAllowed(perm, permissionName, a) {
-							allowed[a] = true
-							found = true
-						}
-					}
-				}
-			}
-		}
-		if found {
-			continue
-		}
-
-		if user.RoleModel.Name != nil {
-			if perm, lErr := LoadRolePermissionsByID(user.RoleModel.ID); lErr == nil && perm != nil {
-				allowed[a] = resourcePermAllowed(perm, permissionName, a)
+		// If role is a canonical role subject (role:<uuid>), use persisted role_permissions
+		if strings.HasPrefix(r, "role:") {
+			roleIDStr := strings.TrimPrefix(r, "role:")
+			roleUUID, pErr := uuid.Parse(roleIDStr)
+			if pErr != nil {
+				// skip malformed role identifier
 				continue
 			}
-		}
 
-		allowed[a] = false
+			var rps []basemodels.RolePermission
+			if err := db.Where("role_id = ? AND resource = ? AND action = ? AND is_active = ?", roleUUID, resource, action, true).Find(&rps).Error; err != nil {
+				continue
+			}
+
+			for _, rp := range rps {
+				// Domain matching: allow if rp.Domain == domain or wildcard
+				if rp.Domain != "*" && rp.Domain != domain {
+					continue
+				}
+				// If no conditions defined, allow immediately
+				if len(rp.Conditions) == 0 {
+					return true, nil
+				}
+				ok, _ := evaluateConditions(rp.Conditions, clientIP, now)
+				if ok {
+					return true, nil
+				}
+			}
+		} else {
+			// Non-canonical role names (e.g., 'admin'/'super_admin') — treat via Casbin enforcement
+			allowed, err := enforcer.Enforce(userSubject, resource, action, domain)
+			if err != nil {
+				return false, err
+			}
+			if allowed {
+				return true, nil
+			}
+		}
+	}
+
+	// 3) Fallback: check Casbin enforcement for the user directly (covers system-wide policies)
+	allowed, err := enforcer.Enforce(userSubject, resource, action, domain)
+	if err != nil {
+		return false, err
 	}
 	return allowed, nil
 }
 
-// SyncUserRole synchronizes User.Role from RoleID in DB (renamed from SyncUserRoleWithCasbin)
-func SyncUserRole(userID uuid.UUID) error {
-	db, err := config.NewConnection()
+// CheckUserCompanyPermission checks user's company-scoped permission with Redis cache
+func CheckUserCompanyPermission(userID uuid.UUID, resource, action string, companyID *uuid.UUID) (bool, error) {
+	if enforcer == nil {
+		return false, fmt.Errorf("enforcer not initialized")
+	}
+
+	domain := BuildDomainID(companyID)
+	userSubject := fmt.Sprintf("user:%s", userID.String())
+
+	// Check cache first
+	if cached, found := getCachedPermission(userSubject, resource, action, domain); found {
+		return cached, nil
+	}
+
+	// Not in cache, check with Casbin
+	result, err := enforcer.Enforce(userSubject, resource, action, domain)
+	if err != nil {
+		return false, err
+	}
+
+	// Cache the result
+	setCachedPermission(userSubject, resource, action, domain, result)
+
+	return result, nil
+}
+
+// CheckUserSystemPermission checks user's system-wide permission
+func CheckUserSystemPermission(userID uuid.UUID, resource, action string) (bool, error) {
+	return CheckUserCompanyPermission(userID, resource, action, nil)
+}
+
+// LoadRolePermissionsByID loads permissions for a role from Casbin policies
+func LoadRolePermissionsByID(roleID uuid.UUID) (interface{}, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
+	}
+
+	roleName := fmt.Sprintf("role:%s", roleID.String())
+
+	// Get all policies where this role is the subject
+	policies, err := enforcer.GetFilteredPolicy(0, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert policies to permission objects
+	permissions := make([]map[string]interface{}, 0, len(policies))
+	for _, policy := range policies {
+		if len(policy) >= 3 {
+			permissions = append(permissions, map[string]interface{}{
+				"resource": policy[1],
+				"action":   policy[2],
+				"domain":   policy[3],
+			})
+		}
+	}
+
+	return permissions, nil
+}
+
+// UpsertRolePermissionsFromPermissions updates role permissions in Casbin
+func UpsertRolePermissionsFromPermissions(roleID uuid.UUID, p interface{}) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	roleName := fmt.Sprintf("role:%s", roleID.String())
+
+	log.Printf("UpsertRolePermissionsFromPermissions: role=%s incoming=%T", roleName, p)
+
+	// Capture existing RolePermission rows so we can preserve their is_active state
+	conn, connErr := config.NewConnection()
+	existingActive := make(map[string]bool)
+	if connErr == nil {
+		var existingRows []basemodels.RolePermission
+		if err := conn.Where("role_id = ?", roleID).Find(&existingRows).Error; err == nil {
+			for _, r := range existingRows {
+				key := fmt.Sprintf("%s|%s|%s", r.Resource, r.Action, r.Domain)
+				existingActive[key] = r.IsActive
+			}
+		}
+	}
+
+	// Remove existing policies for this role
+	_, err := enforcer.RemoveFilteredPolicy(0, roleName)
 	if err != nil {
 		return err
 	}
-	var user authmodels.User
-	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
-		return err
+
+	// Add new policies
+	permissions, ok := p.([]map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid permissions format")
 	}
-	if user.RoleID == nil {
-		var def basemodels.Role
-		if err := db.Where("name = ?", "user").First(&def).Error; err == nil {
-			user.RoleID = &def.ID
-			user.Role = "user"
-			if err := db.Save(&user).Error; err != nil {
-				return err
-			}
+
+	for _, perm := range permissions {
+		resource, ok1 := perm["resource"].(string)
+		action, ok2 := perm["action"].(string)
+		domain, ok3 := perm["domain"].(string)
+
+		if !ok1 || !ok2 || !ok3 {
+			continue
 		}
-		return nil
-	}
-	var r basemodels.Role
-	if err := db.Where("id = ?", user.RoleID).First(&r).Error; err != nil {
-		return err
-	}
-	if r.Name != nil {
-		user.Role = *r.Name
-		if err := db.Save(&user).Error; err != nil {
+
+		_, err := enforcer.AddPolicy(roleName, resource, action, domain)
+		if err != nil {
 			return err
 		}
 	}
+
+	// Persist Casbin policies
+	if err := enforcer.SavePolicy(); err != nil {
+		return err
+	}
+
+	// Invalidate cache for all users who might have this role
+	if redisClient != nil {
+		pattern := "casbin:perm:*"
+		keys, err := redisClient.Keys(context.Background(), pattern).Result()
+		if err == nil && len(keys) > 0 {
+			redisClient.Del(context.Background(), keys...)
+		}
+	}
+
+	// Persist role_permissions rows in DB to keep canonical record of role rules
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
+		// Attempt rollback: remove newly added policies for this role
+		_, _ = enforcer.RemoveFilteredPolicy(0, roleName)
+		_ = enforcer.SavePolicy()
+		return fmt.Errorf("failed to connect db to persist role_permissions: %w", dbErr)
+	}
+
+	tx := db.Begin()
+	// Hard-delete existing RolePermission rows for role to free unique constraint
+	if err := tx.Unscoped().Where("role_id = ?", roleID).Delete(&basemodels.RolePermission{}).Error; err != nil {
+		tx.Rollback()
+		// rollback casbin policies
+		_, _ = enforcer.RemoveFilteredPolicy(0, roleName)
+		_ = enforcer.SavePolicy()
+		return fmt.Errorf("failed to clear existing role_permissions: %w", err)
+	}
+
+	// Create new RolePermission rows (deduplicated by resource+action)
+	var rows []basemodels.RolePermission
+	seen := make(map[string]bool)
+	for _, perm := range permissions {
+		resource, ok1 := perm["resource"].(string)
+		action, ok2 := perm["action"].(string)
+		domain, _ := perm["domain"].(string)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if domain == "" {
+			domain = "*"
+		}
+		key := fmt.Sprintf("%s|%s|%s", resource, action, domain)
+		if seen[key] {
+			// skip duplicate resource+action+domain pairs
+			continue
+		}
+		seen[key] = true
+		// Preserve previous is_active value when possible, otherwise default to true
+		isActive := true
+		if v, ok := existingActive[key]; ok {
+			isActive = v
+		}
+		rp := basemodels.NewRolePermission(roleID, resource, action, "allow", domain, nil, 0, isActive)
+		rows = append(rows, rp)
+	}
+
+	if len(rows) > 0 {
+		// Use ON CONFLICT DO NOTHING as extra safety in case of concurrent inserts
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+			tx.Rollback()
+			// rollback casbin policies
+			_, _ = enforcer.RemoveFilteredPolicy(0, roleName)
+			_ = enforcer.SavePolicy()
+			return fmt.Errorf("failed to insert role_permissions: %w", err)
+		}
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		// rollback casbin policies
+		_, _ = enforcer.RemoveFilteredPolicy(0, roleName)
+		_ = enforcer.SavePolicy()
+		return fmt.Errorf("failed to commit role_permissions transaction: %w", err)
+	}
+
+	log.Printf("UpsertRolePermissionsFromPermissions: saved policies for role=%s, count=%d", roleName, len(permissions))
 	return nil
 }
 
-// CheckUserCustomPermissions checks user-specific overrides
-func CheckUserCustomPermissions(userID uuid.UUID, resource, action string) (bool, bool, error) {
-	db, err := config.NewConnection()
-	if err != nil {
-		return false, false, err
-	}
-	var perms []authmodels.UserPermission
-	if err := db.Where("user_id = ? AND resource = ?", userID, resource).Order("priority DESC").Find(&perms).Error; err != nil {
-		return false, false, err
-	}
-	now := time.Now()
-	for _, p := range perms {
-		if !p.IsAllowed {
-			if p.TimeRestriction == nil || p.TimeRestriction.IsAllowedAtTime(now) {
-				return false, true, nil
-			}
-			continue
-		}
-		if p.Action == action || p.Action == "*" {
-			if p.TimeRestriction == nil || p.TimeRestriction.IsAllowedAtTime(now) {
-				return true, true, nil
-			}
-		}
-	}
-	return false, false, nil
-}
-
-// CheckUserCompanyPermission checks permission via custom perms then role JSON
-func CheckUserCompanyPermission(userID uuid.UUID, resource, action string, companyID *uuid.UUID) (bool, error) {
-	if allowed, isCustom, err := CheckUserCustomPermissions(userID, resource, action); err != nil {
-		return false, err
-	} else if isCustom {
-		return allowed, nil
-	}
-	db, err := config.NewConnection()
-	if err != nil {
-		return false, err
-	}
-	var user authmodels.User
-	if err := db.Preload("RoleModel").Where("id = ?", userID).First(&user).Error; err != nil {
-		return false, err
-	}
-	if user.Role == "super_admin" {
-		return true, nil
-	}
-	if companyID != nil {
-		var cm companymodels.CompanyMember
-		if err := db.Preload("Role").Where("user_id = ? AND company_id = ? AND is_active = ?", userID, *companyID, true).First(&cm).Error; err == nil {
-			if cm.Role != nil {
-				if perm, lErr := LoadRolePermissionsByID(cm.Role.ID); lErr == nil && perm != nil {
-					if resourcePermAllowed(perm, resource, action) {
-						return true, nil
-					}
-				}
-			}
-		}
-	}
-	if user.RoleModel.Name != nil {
-		if perm, lErr := LoadRolePermissionsByID(user.RoleModel.ID); lErr == nil && perm != nil {
-			if resourcePermAllowed(perm, resource, action) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-// CheckUserSystemPermission checks system-level permission
-func CheckUserSystemPermission(userID uuid.UUID, resource, action string) (bool, error) {
-	if allowed, isCustom, err := CheckUserCustomPermissions(userID, resource, action); err != nil {
-		return false, err
-	} else if isCustom {
-		return allowed, nil
-	}
-	db, err := config.NewConnection()
-	if err != nil {
-		return false, err
-	}
-	var user authmodels.User
-	if err := db.Preload("RoleModel").Where("id = ?", userID).First(&user).Error; err != nil {
-		return false, err
-	}
-	if user.Role == "super_admin" {
-		return true, nil
-	}
-	if user.RoleModel.Name != nil {
-		if perm, lErr := LoadRolePermissionsByID(user.RoleModel.ID); lErr == nil && perm != nil {
-			if resourcePermAllowed(perm, resource, action) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func resourcePermAllowed(p *basemodels.Permissions, resource, action string) bool {
+// ConvertPermissionsToCasbinList converts a Permissions struct into a slice of
+// map[string]interface{} entries suitable for UpsertRolePermissionsFromPermissions.
+// domain should be a Casbin domain string (e.g. "*" or "company:<id>").
+func ConvertPermissionsToCasbinList(p *basemodels.Permissions, domain string) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0)
 	if p == nil {
-		return false
+		return out
 	}
-	switch strings.ToLower(resource) {
-	case "users":
-		return checkPermDetail(p.Users, action)
-	case "companies":
-		return checkPermDetail(p.Companies, action)
-	case "branches":
-		return checkPermDetail(p.Branches, action)
-	case "departments":
-		return checkPermDetail(p.Departments, action)
-	case "roles":
-		return checkPermDetail(p.Roles, action)
-	case "reports":
-		return checkPermDetail(p.Reports, action)
-	case "settings":
-		return checkPermDetail(p.Settings, action)
-	default:
-		if p.Custom != nil {
-			if d, ok := p.Custom[resource]; ok {
-				return checkPermDetail(d, action)
+
+	addFromDetail := func(resource string, d *basemodels.PermissionDetail) {
+		if d == nil {
+			return
+		}
+		if d.Create != nil && *d.Create {
+			out = append(out, map[string]interface{}{"resource": resource, "action": "create", "domain": domain})
+		}
+		if d.Read != nil && *d.Read {
+			out = append(out, map[string]interface{}{"resource": resource, "action": "read", "domain": domain})
+		}
+		if d.Update != nil && *d.Update {
+			out = append(out, map[string]interface{}{"resource": resource, "action": "update", "domain": domain})
+		}
+		if d.Delete != nil && *d.Delete {
+			out = append(out, map[string]interface{}{"resource": resource, "action": "delete", "domain": domain})
+		}
+	}
+
+	addFromDetail("users", p.Users)
+	addFromDetail("companies", p.Companies)
+	addFromDetail("branches", p.Branches)
+	addFromDetail("departments", p.Departments)
+	addFromDetail("roles", p.Roles)
+	addFromDetail("reports", p.Reports)
+	addFromDetail("settings", p.Settings)
+
+	// custom permissions
+	if p.Custom != nil {
+		for k, v := range p.Custom {
+			addFromDetail(k, v)
+		}
+	}
+
+	return out
+}
+
+// DeleteRolePermissionsByRoleID deletes permissions for a role from Casbin
+func DeleteRolePermissionsByRoleID(roleID uuid.UUID) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	roleName := fmt.Sprintf("role:%s", roleID.String())
+
+	// Remove all policies for this role
+	_, err := enforcer.RemoveFilteredPolicy(0, roleName)
+	if err != nil {
+		return err
+	}
+
+	// Save Casbin policy removal
+	if err := enforcer.SavePolicy(); err != nil {
+		return err
+	}
+
+	// Also remove persisted role_permissions DB rows for this role
+	db, dbErr := config.NewConnection()
+	if dbErr != nil {
+		// Log warning but return nil since Casbin policies were removed
+		log.Printf("Warning: could not connect DB to remove role_permissions for role %s: %v", roleName, dbErr)
+		return nil
+	}
+
+	if err := db.Where("role_id = ?", roleID).Delete(&basemodels.RolePermission{}).Error; err != nil {
+		log.Printf("Warning: failed to delete role_permissions DB rows for role %s: %v", roleName, err)
+	}
+
+	return nil
+}
+
+// CopyRolePermissions copies permissions from one role to another in Casbin
+func CopyRolePermissions(srcRoleID, dstRoleID uuid.UUID) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	srcRoleName := fmt.Sprintf("role:%s", srcRoleID.String())
+	dstRoleName := fmt.Sprintf("role:%s", dstRoleID.String())
+
+	// Get source role policies
+	policies, err := enforcer.GetFilteredPolicy(0, srcRoleName)
+	if err != nil {
+		return err
+	}
+
+	// Remove existing destination role policies
+	_, err = enforcer.RemoveFilteredPolicy(0, dstRoleName)
+	if err != nil {
+		return err
+	}
+
+	// Add policies to destination role
+	for _, policy := range policies {
+		if len(policy) >= 4 {
+			_, err := enforcer.AddPolicy(dstRoleName, policy[1], policy[2], policy[3])
+			if err != nil {
+				return err
 			}
 		}
 	}
-	return false
+
+	return enforcer.SavePolicy()
 }
 
-func checkPermDetail(d *basemodels.PermissionDetail, action string) bool {
-	if d == nil {
-		return false
+// ListPermissions lists all unique resources (permissions) from Casbin policies
+func ListPermissions() ([]interface{}, error) {
+	if enforcer == nil {
+		return nil, fmt.Errorf("enforcer not initialized")
 	}
-	switch strings.ToLower(action) {
-	case "create":
-		return d.Create != nil && *d.Create
-	case "read":
-		return d.Read != nil && *d.Read
-	case "update":
-		return d.Update != nil && *d.Update
-	case "delete":
-		return d.Delete != nil && *d.Delete
-	default:
-		return false
+
+	policies, err := enforcer.GetPolicy()
+	if err != nil {
+		return nil, err
 	}
+
+	// Extract unique resources
+	resourceMap := make(map[string]bool)
+	for _, policy := range policies {
+		if len(policy) >= 2 {
+			resourceMap[policy[1]] = true
+		}
+	}
+
+	// Convert to interface slice
+	result := make([]interface{}, 0, len(resourceMap))
+	for resource := range resourceMap {
+		result = append(result, map[string]interface{}{
+			"name":         resource,
+			"display_name": resource,
+			"description":  fmt.Sprintf("Permission for %s", resource),
+			"is_active":    true,
+		})
+	}
+
+	return result, nil
+}
+
+// ListAllPermissions lists all permissions including inactive ones
+func ListAllPermissions() ([]interface{}, error) {
+	return ListPermissions()
+}
+
+// CreatePermission creates a new permission (resource) in Casbin
+func CreatePermission(p interface{}) (interface{}, error) {
+	perm, ok := p.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid permission type")
+	}
+
+	name, ok := perm["name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("permission name is required")
+	}
+
+	// In Casbin-only approach, permissions are just resources
+	// We don't need to store them separately, they're created when policies are added
+	return map[string]interface{}{
+		"name":         name,
+		"display_name": perm["display_name"],
+		"description":  perm["description"],
+		"is_active":    true,
+	}, nil
+}
+
+// UpdatePermission updates a permission (not applicable in Casbin-only approach)
+func UpdatePermission(name string, patch map[string]interface{}) (interface{}, error) {
+	// In Casbin-only approach, permissions are implicit
+	// This is a no-op but we return success for compatibility
+	return map[string]interface{}{
+		"name":         name,
+		"display_name": patch["display_name"],
+		"description":  patch["description"],
+		"is_active":    patch["is_active"],
+	}, nil
+}
+
+// DeletePermission deletes a permission (removes all policies for this resource)
+func DeletePermission(name string) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	// Remove all policies where this resource is the object
+	_, err := enforcer.RemoveFilteredPolicy(1, name)
+	if err != nil {
+		return err
+	}
+
+	return enforcer.SavePolicy()
+}
+
+// SyncUserRole syncs user role with Casbin (simplified for Casbin-only approach)
+func SyncUserRole(userID uuid.UUID) error {
+	if enforcer == nil {
+		return fmt.Errorf("enforcer not initialized")
+	}
+
+	// In Casbin-only approach, we assume roles are already managed in Casbin
+	// This function is kept for compatibility but simplified
+	log.Printf("SyncUserRole called for user %s (Casbin-only mode)", userID.String())
+	return nil
+}
+
+// ValidateCustomPermissionsExist validates that custom permissions exist (simplified)
+func ValidateCustomPermissionsExist(p interface{}) ([]string, error) {
+	// In Casbin-only approach, permissions are validated at policy level
+	// This is kept for compatibility
+	return []string{}, nil
 }

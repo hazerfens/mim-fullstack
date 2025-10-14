@@ -1,9 +1,9 @@
 package middleware
 
 import (
-	"net/http"
-
 	"mimbackend/internal/services"
+	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,6 +18,7 @@ func ABACMiddleware(resource, action string) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
 		userID, ok := userIDVal.(uuid.UUID)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
@@ -25,38 +26,29 @@ func ABACMiddleware(resource, action string) gin.HandlerFunc {
 			return
 		}
 
+		// Get company_id from query param or context
 		var companyID *uuid.UUID
-		if p := c.Param("companyID"); p != "" {
-			if id, err := uuid.Parse(p); err == nil {
-				companyID = &id
-			}
-		}
-		if companyID == nil {
-			if q := c.Query("company_id"); q != "" {
-				if id, err := uuid.Parse(q); err == nil {
-					companyID = &id
-				}
-			}
-		}
-		if companyID == nil {
-			if cv, ok := c.Get("company_id"); ok {
-				if id, ok := cv.(uuid.UUID); ok {
-					companyID = &id
-				}
+		if companyIDStr := c.Query("company_id"); companyIDStr != "" {
+			if cid, err := uuid.Parse(companyIDStr); err == nil {
+				companyID = &cid
 			}
 		}
 
-		allowed, err := services.CheckUserCompanyPermission(userID, resource, action, companyID)
+		// Check permission (include client IP and current time for conditional rules)
+		clientIP := c.ClientIP()
+		allowed, err := services.CheckUserCompanyPermissionWithContext(userID, resource, action, companyID, clientIP, time.Now())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission check failed"})
 			c.Abort()
 			return
 		}
+
 		if !allowed {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
 			c.Abort()
 			return
 		}
+
 		c.Next()
 	}
 }
@@ -70,6 +62,7 @@ func SystemABACMiddleware(resource, action string) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
 		userID, ok := userIDVal.(uuid.UUID)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
@@ -77,32 +70,21 @@ func SystemABACMiddleware(resource, action string) gin.HandlerFunc {
 			return
 		}
 
-		// Check custom user perms first
-		if allowed, isCustom, err := services.CheckUserCustomPermissions(userID, resource, action); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Custom permission check failed"})
-			c.Abort()
-			return
-		} else if isCustom {
-			if !allowed {
-				c.JSON(http.StatusForbidden, gin.H{"error": "Access denied by custom permission policy"})
-				c.Abort()
-				return
-			}
-			c.Next()
-			return
-		}
-
-		allowed, err := services.CheckUserSystemPermission(userID, resource, action)
+		// Check system permission (include client IP and current time for conditional rules)
+		clientIP := c.ClientIP()
+		allowed, err := services.CheckUserCompanyPermissionWithContext(userID, resource, action, nil, clientIP, time.Now())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission check failed"})
 			c.Abort()
 			return
 		}
+
 		if !allowed {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient system permissions"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
 			c.Abort()
 			return
 		}
+
 		c.Next()
 	}
 }
@@ -116,6 +98,7 @@ func RoleBasedMiddleware(role string) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
 		userID, ok := userIDVal.(uuid.UUID)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
@@ -123,50 +106,46 @@ func RoleBasedMiddleware(role string) gin.HandlerFunc {
 			return
 		}
 
+		// Get company_id from query param or context
 		var companyID *uuid.UUID
-		if p := c.Param("companyID"); p != "" {
-			if id, err := uuid.Parse(p); err == nil {
-				companyID = &id
-			}
-		}
-		if companyID == nil {
-			if q := c.Query("company_id"); q != "" {
-				if id, err := uuid.Parse(q); err == nil {
-					companyID = &id
-				}
-			}
-		}
-		if companyID == nil {
-			if cv, ok := c.Get("company_id"); ok {
-				if id, ok := cv.(uuid.UUID); ok {
-					companyID = &id
-				}
+		if companyIDStr := c.Query("company_id"); companyIDStr != "" {
+			if cid, err := uuid.Parse(companyIDStr); err == nil {
+				companyID = &cid
 			}
 		}
 
-		domain := "*"
-		if companyID != nil {
-			domain = services.BuildDomainID(companyID)
-		}
+		domain := services.BuildDomainID(companyID)
+		userSubject := "user:" + userID.String()
 
-		roles, err := services.GetRolesForUser(userID.String(), domain)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Role check failed"})
+		// Get enforcer and check if user has the required role
+		enforcer := services.GetEnforcer()
+		if enforcer == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission system not initialized"})
 			c.Abort()
 			return
 		}
-		has := false
+
+		roles, err := enforcer.GetRolesForUser(userSubject, domain)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user roles"})
+			c.Abort()
+			return
+		}
+
+		hasRole := false
 		for _, r := range roles {
 			if r == role {
-				has = true
+				hasRole = true
 				break
 			}
 		}
-		if !has {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Required role not found: " + role})
+
+		if !hasRole {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Required role not found"})
 			c.Abort()
 			return
 		}
+
 		c.Next()
 	}
 }
@@ -180,6 +159,7 @@ func AdminMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
 		userID, ok := userIDVal.(uuid.UUID)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
@@ -187,46 +167,57 @@ func AdminMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// System admin check
-		systemAllowed, err := services.CheckUserSystemPermission(userID, "*", "*")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Admin check failed"})
-			c.Abort()
-			return
-		}
-		if systemAllowed {
-			c.Next()
-			return
-		}
-
-		// Company admin check
-		var companyID *uuid.UUID
-		if p := c.Param("companyID"); p != "" {
-			if id, err := uuid.Parse(p); err == nil {
-				companyID = &id
-			}
-		}
-		if companyID == nil {
-			if q := c.Query("company_id"); q != "" {
-				if id, err := uuid.Parse(q); err == nil {
-					companyID = &id
-				}
-			}
-		}
-		if companyID != nil {
-			companyAllowed, err := services.CheckUserCompanyPermission(userID, "admin", "access", companyID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Company admin check failed"})
-				c.Abort()
-				return
-			}
-			if companyAllowed {
+		// Check JWT role claim first (simpler and more reliable)
+		userRoleVal, roleExists := c.Get("user_role")
+		if roleExists {
+			userRole, ok := userRoleVal.(string)
+			if ok && (userRole == "admin" || userRole == "super_admin") {
 				c.Next()
 				return
 			}
 		}
 
-		c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
-		c.Abort()
+		// Fallback to Casbin role check if JWT role check fails
+		// Get company_id from query param or context
+		var companyID *uuid.UUID
+		if companyIDStr := c.Query("company_id"); companyIDStr != "" {
+			if cid, err := uuid.Parse(companyIDStr); err == nil {
+				companyID = &cid
+			}
+		}
+
+		domain := services.BuildDomainID(companyID)
+		userSubject := "user:" + userID.String()
+
+		// Get enforcer and check if user has admin or super_admin role
+		enforcer := services.GetEnforcer()
+		if enforcer == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Permission system not initialized"})
+			c.Abort()
+			return
+		}
+
+		roles, err := enforcer.GetRolesForUser(userSubject, domain)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user roles"})
+			c.Abort()
+			return
+		}
+
+		isAdmin := false
+		for _, r := range roles {
+			if r == "admin" || r == "super_admin" {
+				isAdmin = true
+				break
+			}
+		}
+
+		if !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
 	}
 }

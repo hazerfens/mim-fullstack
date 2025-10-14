@@ -243,11 +243,13 @@ func AcceptInvitation(token string, userID uuid.UUID) error {
 	}
 
 	// Assign role for this user in the company domain (policy system removed)
-	if role.Name != nil {
+	if role.ID != uuid.Nil {
 		domain := BuildDomainID(&invitation.CompanyID)
-		if _, err := AddRoleForUser(userID.String(), *role.Name, domain); err != nil {
+		userSubject := fmt.Sprintf("user:%s", userID.String())
+		roleSubject := fmt.Sprintf("role:%s", role.ID.String())
+		if _, err := AddRoleForUser(userSubject, roleSubject, domain); err != nil {
 			// Log error but do not fail acceptance
-			log.Printf("Warning: failed to assign role for user %s in company %s: %v", userID.String(), invitation.CompanyID.String(), err)
+			log.Printf("Warning: failed to assign role for user %s in company %s: %v", userSubject, invitation.CompanyID.String(), err)
 		}
 	}
 

@@ -6,19 +6,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 // UserPermission kullanıcıya özel izinler ve kısıtlamalar
 type UserPermission struct {
-	ID              uuid.UUID        `gorm:"type:varchar(36);primaryKey" json:"id"`
-	UserID          uuid.UUID        `gorm:"type:varchar(36);not null;index" json:"user_id"`
-	Resource        string           `gorm:"type:varchar(50);not null" json:"resource"` // users, roles, settings, reports
-	Action          string           `gorm:"type:varchar(20);not null" json:"action"`   // create, read, update, delete
+	ID       uuid.UUID `gorm:"type:varchar(36);primaryKey" json:"id"`
+	UserID   uuid.UUID `gorm:"type:varchar(36);not null;index" json:"user_id"`
+	Resource string    `gorm:"type:varchar(50);not null" json:"resource"` // users, roles, settings, reports
+	Action   string    `gorm:"type:varchar(20);not null" json:"action"`   // create, read, update, delete
+	// Domain allows scoping the permission (e.g. company:<uuid>), default '*' means all domains
+	Domain          string           `gorm:"type:varchar(64);default:'*'" json:"domain"`
 	IsAllowed       bool             `gorm:"default:true" json:"is_allowed"`
 	TimeRestriction *TimeRestriction `gorm:"type:json" json:"time_restriction,omitempty"`
-	Priority        int              `gorm:"default:0" json:"priority"` // Yüksek priority role izinlerini override eder
-	CreatedAt       time.Time        `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt       time.Time        `gorm:"autoUpdateTime" json:"updated_at"`
+	// AllowedIPs stored as JSON array of IPs or CIDRs (e.g. ["10.0.0.1","192.168.1.0/24"])
+	AllowedIPs datatypes.JSON `gorm:"type:json" json:"allowed_ips,omitempty"`
+	Priority   int            `gorm:"default:0" json:"priority"` // Yüksek priority role izinlerini override eder
+	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relations
 	User User `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE" json:"-"`

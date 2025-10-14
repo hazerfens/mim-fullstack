@@ -245,16 +245,8 @@ func CreateCompany(userID uuid.UUID, name, slug string) (*companymodels.Company,
 		return nil, err
 	}
 
-	// After transaction commit: create default company policies (no Casbin)
-	domain := BuildDomainID(&company.ID)
-
-	// Company-level policies (informational) — persisted by role JSON and user assignments
-	_ = domain // kept for clarity; policies are enforced via role JSON and membership
-
-	// Assign the creating user to the company_owner role (persisted via CompanyMember created above)
-	if ownerRole.Name != nil {
-		log.Printf("assigned owner role %s to user %s for company %s", *ownerRole.Name, userID.String(), company.ID.String())
-	}
+	// Company created successfully - no Casbin policies needed since we removed the system
+	log.Printf("assigned owner role %s to user %s for company %s", *ownerRole.Name, userID.String(), company.ID.String())
 
 	return company, nil
 }
@@ -262,14 +254,16 @@ func CreateCompany(userID uuid.UUID, name, slug string) (*companymodels.Company,
 // permissionsToJSON converts Permissions struct to *datatypes.JSON for storing in DB
 func permissionsToJSON(p *basemodels.Permissions) *datatypes.JSON {
 	if p == nil {
-		return nil
+		emptyJSON := datatypes.JSON(`{}`)
+		return &emptyJSON
 	}
-	b, err := json.Marshal(p)
+	raw, err := json.Marshal(p)
 	if err != nil {
-		return nil
+		emptyJSON := datatypes.JSON(`{}`)
+		return &emptyJSON
 	}
-	d := datatypes.JSON(b)
-	return &d
+	j := datatypes.JSON(raw)
+	return &j
 }
 
 // Helper to create a PermissionDetail where all operations are allowed
@@ -543,13 +537,7 @@ func DeleteCompany(id uuid.UUID, deletedBy uuid.UUID) error {
 		return err
 	}
 
-	// After transaction commit, remove Casbin policies and groupings for this company domain
-	if err := RemovePoliciesForCompany(id); err != nil {
-		// Log and return error so caller is aware that policy cleanup failed
-		log.Printf("⚠️  Failed to clean policies for deleted company %s: %v", id.String(), err)
-		return err
-	}
-
+	// After transaction commit: no Casbin policies to remove since we removed the system
 	log.Printf("✅ Company deleted: company_id=%s, deleted_by=%s", id, deletedBy)
 	return nil
 }
@@ -570,10 +558,7 @@ func PurgeCompany(id uuid.UUID, performedBy uuid.UUID) error {
 
 	// Begin transaction to remove DB records
 	err = db.Transaction(func(tx *gorm.DB) error {
-		// Remove policies and groupings for domain (do before deleting roles)
-		if err := RemovePoliciesForCompany(id); err != nil {
-			return err
-		}
+		// No Casbin policies to remove since we removed the system
 
 		// Permanently delete dependent records first to satisfy FK constraints:
 		// 1. Company members (references roles)

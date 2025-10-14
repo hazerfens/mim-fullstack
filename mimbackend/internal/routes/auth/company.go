@@ -47,6 +47,10 @@ func SetupCompanyRoutes(router gin.IRouter) {
 			// Company-scoped role management (owner/admin)
 			idGroup.POST("/roles", handlers.CreateCompanyRoleHandler)
 			idGroup.PUT("/roles/:roleId", handlers.UpdateCompanyRoleHandler)
+			// List persisted permissions for a company role and toggle individual permission rows
+			idGroup.GET("/roles/:roleId/permissions", handlers.GetCompanyRolePermissions)
+			idGroup.POST("/roles/:roleId/permissions", handlers.CreateCompanyRolePermission)
+			idGroup.PATCH("/roles/:roleId/permissions/:permissionId", handlers.UpdateCompanyRolePermission)
 			idGroup.DELETE("/roles/:roleId", handlers.DeleteCompanyRoleHandler)
 		}
 	}
