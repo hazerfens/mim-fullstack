@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"time"
 
+	basemodels "mimbackend/internal/models/basemodels"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
 
 // UserPermission kullanıcıya özel izinler ve kısıtlamalar
 type UserPermission struct {
-	ID       uuid.UUID `gorm:"type:varchar(36);primaryKey" json:"id"`
+	basemodels.BaseModel
+
 	UserID   uuid.UUID `gorm:"type:varchar(36);not null;index" json:"user_id"`
 	Resource string    `gorm:"type:varchar(50);not null" json:"resource"` // users, roles, settings, reports
 	Action   string    `gorm:"type:varchar(20);not null" json:"action"`   // create, read, update, delete
@@ -22,8 +25,6 @@ type UserPermission struct {
 	// AllowedIPs stored as JSON array of IPs or CIDRs (e.g. ["10.0.0.1","192.168.1.0/24"])
 	AllowedIPs datatypes.JSON `gorm:"type:json" json:"allowed_ips,omitempty"`
 	Priority   int            `gorm:"default:0" json:"priority"` // Yüksek priority role izinlerini override eder
-	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relations
 	User User `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE" json:"-"`

@@ -166,8 +166,10 @@ func CreateUserCustomPermission(c *gin.Context) {
 			TimeRestriction: req.TimeRestriction,
 			AllowedIPs:      allowedIPsJSON,
 			Priority:        priority,
-			CreatedAt:       time.Now(),
-			UpdatedAt:       time.Now(),
+		}
+		// Ensure ID is set to a non-zero UUID before create to avoid duplicate zero-UUID primary key
+		if up.ID == uuid.Nil {
+			up.ID = uuid.New()
 		}
 		if err := db.Create(&up).Error; err != nil {
 			// rollback casbin policy

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	companymodels "mimbackend/internal/models/company"
 	"net/http"
 
+	"mimbackend/internal/cache"
 	"mimbackend/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -639,6 +641,201 @@ func UpdateCompanyRolePermission(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"permission": rp})
 }
 
+// UpdateCompanyRolePermissionByID replaces/updates a persisted RolePermission row for a company-scoped role (PUT)
+func UpdateCompanyRolePermissionByID(c *gin.Context) {
+	companyIDStr := c.Param("id")
+	roleIDStr := c.Param("roleId")
+	permIDStr := c.Param("permissionId")
+
+	companyID, err := uuid.Parse(companyIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid company ID"})
+		return
+	}
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role ID"})
+		return
+	}
+	permID, err := uuid.Parse(permIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid permission ID"})
+		return
+	}
+
+	var req struct {
+		Resource   *string          `json:"resource"`
+		Action     *string          `json:"action"`
+		Domain     *string          `json:"domain"`
+		Conditions *json.RawMessage `json:"conditions"`
+		IsActive   *bool            `json:"is_active"`
+		Effect     *string          `json:"effect"`
+		Priority   *int             `json:"priority"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	// Auth: check if user is super_admin or company owner/admin
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var requestUser auth.User
+	if err := db.Where("id = ?", userID).First(&requestUser).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+	if requestUser.Role != "super_admin" {
+		var requestMember companymodels.CompanyMember
+		if err := db.Where("company_id = ? AND user_id = ? AND is_active = ?", companyID, userID, true).
+			Preload("Role").
+			First(&requestMember).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only company owners or admins can update role permissions"})
+			return
+		}
+		isAdmin := requestMember.IsOwner
+		if requestMember.Role != nil && requestMember.Role.Name != nil {
+			rn := *requestMember.Role.Name
+			if rn == "company_owner" || rn == "company_admin" {
+				isAdmin = true
+			}
+		}
+		if !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only company owners or admins can update role permissions"})
+			return
+		}
+	}
+
+	// Ensure role belongs to company
+	var role basemodels.Role
+	if err := db.Where("id = ? AND company_id = ?", roleID, companyID).First(&role).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch role"})
+		return
+	}
+
+	var rp basemodels.RolePermission
+	if err := db.Where("id = ? AND role_id = ?", permID, roleID).First(&rp).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found for this role"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch role permission"})
+		return
+	}
+
+	// Keep previous values for Casbin/caching adjustments
+	oldResource := rp.Resource
+	oldAction := rp.Action
+	oldDomain := rp.Domain
+	oldIsActive := rp.IsActive
+
+	// Apply updates (only when provided)
+	if req.Resource != nil && *req.Resource != "" {
+		rp.Resource = *req.Resource
+	}
+	if req.Action != nil && *req.Action != "" {
+		rp.Action = *req.Action
+	}
+	if req.Domain != nil {
+		rp.Domain = *req.Domain
+	}
+	if req.IsActive != nil {
+		rp.IsActive = *req.IsActive
+	}
+	if req.Effect != nil && *req.Effect != "" {
+		rp.Effect = *req.Effect
+	}
+	if req.Priority != nil {
+		rp.Priority = *req.Priority
+	}
+	if req.Conditions != nil {
+		rp.Conditions = datatypes.JSON(*req.Conditions)
+	}
+
+	if err := db.Save(&rp).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update permission record"})
+		return
+	}
+
+	roleSubject := fmt.Sprintf("role:%s", roleID.String())
+
+	// Normalize domains for old/new when empty
+	if oldDomain == "" {
+		oldDomain = services.BuildDomainID(&companyID)
+	}
+	newDomain := rp.Domain
+	if newDomain == "" {
+		newDomain = services.BuildDomainID(&companyID)
+	}
+
+	// If the resource/action/domain or is_active changed, reconcile Casbin
+	// Remove old policy when needed
+	if oldIsActive && (oldResource != rp.Resource || oldAction != rp.Action || oldDomain != newDomain || !rp.IsActive) {
+		if _, err := services.RemovePolicy(roleSubject, oldResource, oldAction, oldDomain); err != nil {
+			// revert DB
+			rp.Resource = oldResource
+			rp.Action = oldAction
+			rp.Domain = oldDomain
+			rp.IsActive = oldIsActive
+			_ = db.Save(&rp)
+			log.Printf("UpdateCompanyRolePermissionByID: RemovePolicy failed for perm_id=%s: %v", rp.ID.String(), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove old policy from Casbin"})
+			return
+		}
+		// also invalidate per-user caches for old resource
+		_ = cache.InvalidateUserPermissionsForResource(context.Background(), oldResource, &companyID)
+	}
+
+	// Add new policy when active
+	if rp.IsActive {
+		if _, err := services.AddPolicy(roleSubject, rp.Resource, rp.Action, newDomain); err != nil {
+			// attempt to rollback to previous DB state
+			rp.Resource = oldResource
+			rp.Action = oldAction
+			rp.Domain = oldDomain
+			rp.IsActive = oldIsActive
+			_ = db.Save(&rp)
+			log.Printf("UpdateCompanyRolePermissionByID: AddPolicy failed for perm_id=%s: %v", rp.ID.String(), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add new policy to Casbin"})
+			return
+		}
+		// Invalidate per-user caches for new resource
+		_ = cache.InvalidateUserPermissionsForResource(context.Background(), rp.Resource, &companyID)
+	}
+
+	if err := services.GetEnforcer().SavePolicy(); err != nil {
+		// rollback DB change
+		rp.Resource = oldResource
+		rp.Action = oldAction
+		rp.Domain = oldDomain
+		rp.IsActive = oldIsActive
+		_ = db.Save(&rp)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist Casbin policy"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"permission": rp})
+}
+
 // GetRolePermissions returns persisted role_permissions rows for a global/system role
 func GetRolePermissions(c *gin.Context) {
 	roleIDStr := c.Param("roleId")
@@ -769,6 +966,173 @@ func UpdateRolePermission(c *gin.Context) {
 	}
 	if err := services.GetEnforcer().SavePolicy(); err != nil {
 		rp.IsActive = prev
+		_ = db.Save(&rp)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist Casbin policy"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"permission": rp})
+}
+
+// UpdateRolePermissionByID replaces/updates a persisted RolePermission row for a system/global role (PUT)
+func UpdateRolePermissionByID(c *gin.Context) {
+	roleIDStr := c.Param("roleId")
+	permIDStr := c.Param("permissionId")
+
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role ID"})
+		return
+	}
+	permID, err := uuid.Parse(permIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid permission ID"})
+		return
+	}
+
+	var req struct {
+		Resource   *string          `json:"resource"`
+		Action     *string          `json:"action"`
+		Domain     *string          `json:"domain"`
+		Conditions *json.RawMessage `json:"conditions"`
+		IsActive   *bool            `json:"is_active"`
+		Effect     *string          `json:"effect"`
+		Priority   *int             `json:"priority"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	db, err := config.NewConnection()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection failed"})
+		return
+	}
+
+	// Only admins may update system role permissions
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var requestUser auth.User
+	if err := db.Where("id = ?", userID).First(&requestUser).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+	if requestUser.Role != "super_admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only system super_admin can update system role permissions"})
+		return
+	}
+
+	var role basemodels.Role
+	if err := db.Where("id = ? AND company_id IS NULL", roleID).First(&role).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch role"})
+		return
+	}
+
+	var rp basemodels.RolePermission
+	if err := db.Where("id = ? AND role_id = ?", permID, roleID).First(&rp).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Permission not found for this role"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch role permission"})
+		return
+	}
+
+	// Keep previous values
+	oldResource := rp.Resource
+	oldAction := rp.Action
+	oldDomain := rp.Domain
+	oldIsActive := rp.IsActive
+
+	// Apply updates when provided
+	if req.Resource != nil && *req.Resource != "" {
+		rp.Resource = *req.Resource
+	}
+	if req.Action != nil && *req.Action != "" {
+		rp.Action = *req.Action
+	}
+	if req.Domain != nil {
+		rp.Domain = *req.Domain
+	}
+	if req.IsActive != nil {
+		rp.IsActive = *req.IsActive
+	}
+	if req.Effect != nil && *req.Effect != "" {
+		rp.Effect = *req.Effect
+	}
+	if req.Priority != nil {
+		rp.Priority = *req.Priority
+	}
+	if req.Conditions != nil {
+		rp.Conditions = datatypes.JSON(*req.Conditions)
+	}
+
+	if err := db.Save(&rp).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update permission record"})
+		return
+	}
+
+	roleSubject := fmt.Sprintf("role:%s", roleID.String())
+
+	// Normalize domains
+	if oldDomain == "" {
+		oldDomain = "*"
+	}
+	newDomain := rp.Domain
+	if newDomain == "" {
+		newDomain = "*"
+	}
+
+	// Remove old policy if needed
+	if oldIsActive && (oldResource != rp.Resource || oldAction != rp.Action || oldDomain != newDomain || !rp.IsActive) {
+		if _, err := services.RemovePolicy(roleSubject, oldResource, oldAction, oldDomain); err != nil {
+			rp.Resource = oldResource
+			rp.Action = oldAction
+			rp.Domain = oldDomain
+			rp.IsActive = oldIsActive
+			_ = db.Save(&rp)
+			log.Printf("UpdateRolePermissionByID: RemovePolicy failed for perm_id=%s: %v", rp.ID.String(), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove old policy from Casbin"})
+			return
+		}
+		// invalidate user caches for old resource
+		_ = cache.InvalidateUserPermissionsForResource(context.Background(), oldResource, nil)
+	}
+
+	// Add new policy when active
+	if rp.IsActive {
+		if _, err := services.AddPolicy(roleSubject, rp.Resource, rp.Action, newDomain); err != nil {
+			rp.Resource = oldResource
+			rp.Action = oldAction
+			rp.Domain = oldDomain
+			rp.IsActive = oldIsActive
+			_ = db.Save(&rp)
+			log.Printf("UpdateRolePermissionByID: AddPolicy failed for perm_id=%s: %v", rp.ID.String(), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add new policy to Casbin"})
+			return
+		}
+		_ = cache.InvalidateUserPermissionsForResource(context.Background(), rp.Resource, nil)
+	}
+
+	if err := services.GetEnforcer().SavePolicy(); err != nil {
+		rp.Resource = oldResource
+		rp.Action = oldAction
+		rp.Domain = oldDomain
+		rp.IsActive = oldIsActive
 		_ = db.Save(&rp)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist Casbin policy"})
 		return

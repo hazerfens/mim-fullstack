@@ -51,6 +51,7 @@ func SetupCompanyRoutes(router gin.IRouter) {
 			idGroup.GET("/roles/:roleId/permissions", handlers.GetCompanyRolePermissions)
 			idGroup.POST("/roles/:roleId/permissions", handlers.CreateCompanyRolePermission)
 			idGroup.PATCH("/roles/:roleId/permissions/:permissionId", handlers.UpdateCompanyRolePermission)
+			idGroup.PUT("/roles/:roleId/permissions/:permissionId", handlers.UpdateCompanyRolePermissionByID)
 			idGroup.DELETE("/roles/:roleId", handlers.DeleteCompanyRoleHandler)
 		}
 	}

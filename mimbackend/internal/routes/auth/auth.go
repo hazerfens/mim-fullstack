@@ -44,6 +44,7 @@ func SetupAuthRoutes(router gin.IRouter) {
 		roleGroup.GET("/:roleId/permissions", handlers.GetRolePermissions)
 		roleGroup.POST("/:roleId/permissions", handlers.CreateRolePermission)
 		roleGroup.PATCH("/:roleId/permissions/:permissionId", handlers.UpdateRolePermission)
+		roleGroup.PUT("/:roleId/permissions/:permissionId", handlers.UpdateRolePermissionByID)
 	}
 
 	// Permission catalog routes - admin-managed; check endpoint available to authenticated users
