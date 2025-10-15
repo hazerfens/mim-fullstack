@@ -10,6 +10,7 @@ import (
 	models "mimbackend/internal/models/auth"
 	basemodels "mimbackend/internal/models/basemodels"
 	companymodels "mimbackend/internal/models/company"
+	systemmodels "mimbackend/internal/models/system"
 	"mimbackend/internal/services"
 	"strings"
 
@@ -60,6 +61,19 @@ func RunMigrations() {
 		&companymodels.Department{},
 	); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Migrate menu tables (create if not exists)
+	menuTables := []interface{}{
+		&systemmodels.Menu{},
+		&systemmodels.SubMenu{},
+		&systemmodels.MenuCategory{},
+		&systemmodels.MenuItem{},
+		&systemmodels.MenuFeaturedItem{},
+	}
+
+	if err := migrator.AutoMigrate(menuTables...); err != nil {
+		log.Fatalf("Failed to migrate menu tables: %v", err)
 	}
 
 	// Migrate role_permissions table (new normalized permissions)

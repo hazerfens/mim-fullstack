@@ -4,6 +4,7 @@ import (
 	"mimbackend/internal/handlers"
 	"mimbackend/internal/middleware"
 	authRoutes "mimbackend/internal/routes/auth"
+	systemRoutes "mimbackend/internal/routes/system"
 	"mimbackend/internal/services"
 	"net/http"
 	"os"
@@ -85,6 +86,7 @@ func NewRouter() *gin.Engine {
 		authRoutes.SetupOAuthRoutes(apiGroup)
 		authRoutes.SetupAPIRoutes(apiGroup)
 		authRoutes.SetupCompanyRoutes(apiGroup)
+		systemRoutes.SetupSystemRoutes(apiGroup)
 	}
 
 	// Debug endpoint
