@@ -9,6 +9,16 @@ import { cookies } from "next/headers";
 import { AppSidebar } from "@/features/components/dashboard/app-sidebar";
 import MyBreadCrumbs from "@/features/components/dashboard/breadcrumbs";
 import DashboardGuard from '@/features/components/dashboard/DashboardGuard';
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Yönetim Paneli",
+  description: "Mim Reklam yönetim paneli - Şirketlerinizi yönetin, reklam kampanyalarınızı takip edin ve raporlarınızı görüntüleyin.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 // import Image from "next/image";
 

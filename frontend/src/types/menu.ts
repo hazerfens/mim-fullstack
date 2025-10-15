@@ -1,7 +1,5 @@
-declare module '*.css';
-
 // Menu system types
-interface Menu {
+export interface Menu {
   id: string;
   menu_category_id: string;
   title: string;
@@ -17,7 +15,7 @@ interface Menu {
   items?: MenuItem[];
 }
 
-interface MenuCategory {
+export interface MenuCategory {
   id: string;
   name: string;
   description?: string;
@@ -30,7 +28,7 @@ interface MenuCategory {
   menus?: Menu[];
 }
 
-interface SubMenu {
+export interface SubMenu {
   id: string;
   menu_id: string;
   name: string;
@@ -44,7 +42,7 @@ interface SubMenu {
   menu?: Menu;
 }
 
-interface MenuItem {
+export interface MenuItem {
   id: string;
   menu_id: string;
   name: string;
@@ -59,7 +57,7 @@ interface MenuItem {
   menu?: Menu;
 }
 
-interface MenuFeaturedItem {
+export interface MenuFeaturedItem {
   id: string;
   menu_id: string;
   name: string;

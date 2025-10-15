@@ -11,6 +11,18 @@ import { getServerSession } from '@/lib/auth';
 import type { Company } from "@/features/actions/company-action";
 import type { User } from "@/types/user/user";
 import { Button } from "@/components/ui/button";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Ana Sayfa",
+  description: "Mim Reklam yönetim paneline hoş geldiniz. Şirketlerinizi yönetin, yeni projeler oluşturun ve reklam çalışmalarınızı takip edin.",
+  keywords: ["yönetim paneli", "şirket yönetimi", "reklam yönetimi", "Mim Reklam"],
+  openGraph: {
+    title: "Ana Sayfa - Mim Reklam Yönetim Paneli",
+    description: "Mim Reklam yönetim paneline hoş geldiniz. Şirketlerinizi yönetin ve reklam çalışmalarınızı takip edin.",
+    type: "website",
+  },
+};
 
 export default async function SayfamizdaPage() {
   const user = (await getServerSession()) as User | null;

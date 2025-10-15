@@ -998,3 +998,51 @@ export async function createRolePermissionAction(roleId: string, payload: any) {
     return { status: 'error', message: 'Role permission oluşturulurken hata oluştu', statusCode: 500 };
   }
 }
+
+// Row-level PUT: update a persisted role_permission row (company-scoped)
+export async function updateCompanyRolePermissionByIdAction(companyId: string, roleId: string, permissionId: string, payload: Record<string, any>) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/company/${companyId}/roles/${roleId}/permissions/${permissionId}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission değiştirilirken hata oluştu', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.updated', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('updateCompanyRolePermissionByIdAction error:', error);
+    return { status: 'error', message: 'Role permission güncellenirken hata oluştu', statusCode: 500 };
+  }
+}
+
+// Row-level PUT: update a persisted role_permission row (system/global)
+export async function updateRolePermissionByIdAction(roleId: string, permissionId: string, payload: Record<string, any>) {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_URL}/roles/${roleId}/permissions/${permissionId}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+      return { status: 'error', message: error.error || 'Role permission değiştirilirken hata oluştu', statusCode: res.status };
+    }
+    const data = await res.json();
+    try { revalidatePath('/dashboard/company/settings/roles'); } catch {}
+    try { broadcastRoleEvent({ type: 'role.permission.updated', roleId, permission: data.permission || data }) } catch {}
+    return { status: 'success', permission: data.permission || data };
+  } catch (error) {
+    console.error('updateRolePermissionByIdAction error:', error);
+    return { status: 'error', message: 'Role permission güncellenirken hata oluştu', statusCode: 500 };
+  }
+}

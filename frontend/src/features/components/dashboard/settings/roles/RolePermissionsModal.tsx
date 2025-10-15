@@ -220,7 +220,8 @@ export const RolePermissionsModal: React.FC<Props> = ({ role, companyId, open, o
       } else {
         // Fallback to row-level PATCH if PUT didn't work for this case
         try {
-          const res = companyId ? await updateCompanyRolePermissionAction(companyId, role.id, perm.id, checked) : await updateRolePermissionAction(role.id, perm.id, checked)
+          const payload = { is_active: checked }
+          const res = companyId ? await updateCompanyRolePermissionByIdAction(companyId, role.id, perm.id, payload) : await updateRolePermissionByIdAction(role.id, perm.id, payload)
           if (res.status === 'success') {
             toast.success('İzin durumu güncellendi')
             fetchPermissions()

@@ -1,9 +1,16 @@
 
 import Image from "next/image";
-
-// import { redirect } from "next/navigation";
 import React from "react";
-// import { SessionProvider } from "@/components/providers/session-provider";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Giriş Yap - Mim Reklam",
+  description: "Mim Reklam yönetim paneline giriş yapın. Hesabınıza güvenli bir şekilde erişin.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 const AuthLayout = async ({ children }: { children: React.ReactNode }) => {
   

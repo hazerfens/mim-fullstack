@@ -3,8 +3,12 @@ import { getServerSession } from '@/lib/auth';
 import DashboardNotifications from '@/features/components/dashboard/dashboard-notifications';
 import { redirect } from 'next/navigation';
 import type { User } from '@/types/user/user';
+import type { Metadata } from "next";
 
-
+export const metadata: Metadata = {
+  title: "Dashboard",
+  description: "Mim Reklam dashboard - Ana kontrol paneli, bildirimler ve genel yönetim.",
+};
 
 const Dashboard = async () => {
   const user = (await getServerSession()) as User | null;

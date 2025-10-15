@@ -111,6 +111,10 @@ const data = {
           title: "Firma İşlemleri",
           url: "/dashboard/company/settings",
         },
+        {
+          title: "Menu İşlemleri",
+          url: "/dashboard/settings/menus",
+        },
       ],
     },
   ],
