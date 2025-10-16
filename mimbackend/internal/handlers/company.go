@@ -400,9 +400,25 @@ func UpdateCompanyHandler(c *gin.Context) {
 	}
 
 	var req struct {
-		Title   *string                       `json:"title"`
-		Name    *string                       `json:"name"`
-		Modules *companymodels.CompanyModules `json:"modules"`
+		Unvani       *string     `json:"unvani"`
+		Adi          *string     `json:"adi"`
+		Name         *string     `json:"name"`
+		Logo         *string     `json:"logo"`
+		Logo2        *string     `json:"logo2"`
+		Email        *string     `json:"email"`
+		VD           *string     `json:"vd"`
+		VN           *string     `json:"vn"`
+		Mersis       *string     `json:"mersis"`
+		Oda          *string     `json:"oda"`
+		OdaNo        *string     `json:"odano"`
+		Phone        *string     `json:"phone"`
+		Phone2       *string     `json:"phone2"`
+		Fax          *string     `json:"fax"`
+		Cellphone    *string     `json:"cellphone"`
+		URL          *string     `json:"url"`
+		Address      interface{} `json:"address"`
+		Coordinates  interface{} `json:"coordinates"`
+		WorkingHours interface{} `json:"workinghours"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -412,14 +428,77 @@ func UpdateCompanyHandler(c *gin.Context) {
 
 	updates := make(map[string]interface{})
 
-	if req.Title != nil {
-		updates["title"] = req.Title
+	if req.Unvani != nil && *req.Unvani != "" {
+		updates["unvani"] = req.Unvani
 	}
-	if req.Name != nil {
-		updates["name"] = req.Name
+	if req.Adi != nil && *req.Adi != "" {
+		updates["adi"] = req.Adi
 	}
-	if req.Modules != nil {
-		updates["modules"] = req.Modules
+	if req.Name != nil && *req.Name != "" {
+		// keep compatibility: map name to adi
+		updates["adi"] = req.Name
+	}
+	if req.Logo != nil {
+		updates["logo"] = req.Logo
+	}
+	if req.Logo2 != nil {
+		updates["logo2"] = req.Logo2
+	}
+	if req.Email != nil && *req.Email != "" {
+		updates["email"] = req.Email
+	}
+	if req.VD != nil && *req.VD != "" {
+		updates["vd"] = req.VD
+	}
+	if req.VN != nil && *req.VN != "" {
+		updates["vn"] = req.VN
+	}
+	if req.Mersis != nil && *req.Mersis != "" {
+		updates["mersis"] = req.Mersis
+	}
+	if req.Oda != nil && *req.Oda != "" {
+		updates["oda"] = req.Oda
+	}
+	if req.OdaNo != nil && *req.OdaNo != "" {
+		updates["odano"] = req.OdaNo
+	}
+	if req.Phone != nil && *req.Phone != "" {
+		updates["phone"] = req.Phone
+	}
+	if req.Phone2 != nil && *req.Phone2 != "" {
+		updates["phone2"] = req.Phone2
+	}
+	if req.Fax != nil && *req.Fax != "" {
+		updates["fax"] = req.Fax
+	}
+	if req.Cellphone != nil && *req.Cellphone != "" {
+		updates["cellphone"] = req.Cellphone
+	}
+	if req.URL != nil && *req.URL != "" {
+		updates["url"] = req.URL
+	}
+
+	// Handle JSON fields - convert map to typed struct so GORM can use Value() method
+	if req.Address != nil {
+		var address companymodels.Address
+		jsonBytes, _ := json.Marshal(req.Address)
+		if err := json.Unmarshal(jsonBytes, &address); err == nil {
+			updates["address"] = &address
+		}
+	}
+	if req.Coordinates != nil {
+		var coordinates companymodels.Coordinates
+		jsonBytes, _ := json.Marshal(req.Coordinates)
+		if err := json.Unmarshal(jsonBytes, &coordinates); err == nil {
+			updates["coordinates"] = &coordinates
+		}
+	}
+	if req.WorkingHours != nil {
+		var workingHours companymodels.WorkingHours
+		jsonBytes, _ := json.Marshal(req.WorkingHours)
+		if err := json.Unmarshal(jsonBytes, &workingHours); err == nil {
+			updates["workinghours"] = &workingHours
+		}
 	}
 
 	if len(updates) == 0 {

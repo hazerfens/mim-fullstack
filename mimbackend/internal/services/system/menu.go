@@ -67,6 +67,7 @@ func (s *MenuService) GetAllMenuCategories() ([]systemModels.MenuCategory, error
 	var categories []systemModels.MenuCategory
 	err := s.db.Preload("Menus", func(db *gorm.DB) *gorm.DB {
 		return db.Preload("MenuCategory").
+			Order("`order`").
 			Preload("SubMenus", func(db *gorm.DB) *gorm.DB {
 				return db.Order("`order`")
 			}).
@@ -110,7 +111,7 @@ func (s *MenuService) CreateMenu(menu *systemModels.Menu) error {
 
 // UpdateMenu updates an existing menu
 func (s *MenuService) UpdateMenu(menu *systemModels.Menu) error {
-	return s.db.Save(menu).Error
+	return s.db.Model(&systemModels.Menu{}).Where("id = ?", menu.ID).Updates(menu).Error
 }
 
 // DeleteMenu deletes a menu
@@ -126,7 +127,7 @@ func (s *MenuService) CreateMenuCategory(category *systemModels.MenuCategory) er
 
 // UpdateMenuCategory updates an existing category
 func (s *MenuService) UpdateMenuCategory(category *systemModels.MenuCategory) error {
-	return s.db.Save(category).Error
+	return s.db.Model(&systemModels.MenuCategory{}).Where("id = ?", category.ID).Updates(category).Error
 }
 
 // DeleteMenuCategory deletes a category
@@ -142,7 +143,7 @@ func (s *MenuService) CreateMenuItem(item *systemModels.MenuItem) error {
 
 // UpdateMenuItem updates an existing item
 func (s *MenuService) UpdateMenuItem(item *systemModels.MenuItem) error {
-	return s.db.Save(item).Error
+	return s.db.Model(&systemModels.MenuItem{}).Where("id = ?", item.ID).Updates(item).Error
 }
 
 // DeleteMenuItem deletes an item
@@ -158,7 +159,7 @@ func (s *MenuService) CreateMenuFeaturedItem(item *systemModels.MenuFeaturedItem
 
 // UpdateMenuFeaturedItem updates an existing featured item
 func (s *MenuService) UpdateMenuFeaturedItem(item *systemModels.MenuFeaturedItem) error {
-	return s.db.Save(item).Error
+	return s.db.Model(&systemModels.MenuFeaturedItem{}).Where("id = ?", item.ID).Updates(item).Error
 }
 
 // DeleteMenuFeaturedItem deletes a featured item
@@ -174,7 +175,7 @@ func (s *MenuService) CreateSubMenu(subMenu *systemModels.SubMenu) error {
 
 // UpdateSubMenu updates an existing sub-menu
 func (s *MenuService) UpdateSubMenu(subMenu *systemModels.SubMenu) error {
-	return s.db.Save(subMenu).Error
+	return s.db.Model(&systemModels.SubMenu{}).Where("id = ?", subMenu.ID).Updates(subMenu).Error
 }
 
 // DeleteSubMenu deletes a sub-menu
