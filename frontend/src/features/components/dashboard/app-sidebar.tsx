@@ -95,6 +95,7 @@ const data = {
       icon: Settings2,
       items: [
 
+        // Firma Ayarları page removed in favor of /dashboard/company/settings
         {
           title: "Kullanıcı Ayarları",
           url: "/dashboard/settings/users",

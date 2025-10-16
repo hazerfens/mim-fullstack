@@ -21,7 +21,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Convert file to buffer
+  // Debug: log incoming file details
+  console.log('[upload] companySlug=', companySlug, 'fileType=', fileType, 'fileName=', file.name, 'size=', file.size);
+
+  // Convert file to buffer
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 

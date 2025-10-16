@@ -169,7 +169,7 @@ export const UsersTable: React.FC<UsersTableProps> = ({ initialPage = 1, initial
                   <TableCell>
                     <div className="flex items-center gap-3">
                       <Avatar className="h-9 w-9">
-                        <AvatarImage src={user.image_url || ''} alt={user.first_name || user.email} />
+                        <AvatarImage src={user.image_url ?? undefined} alt={user.first_name || user.email} />
                         <AvatarFallback className="bg-primary/10 text-primary font-medium">
                           {(user.first_name?.charAt(0) || user.email?.charAt(0) || '').toUpperCase()}
                         </AvatarFallback>

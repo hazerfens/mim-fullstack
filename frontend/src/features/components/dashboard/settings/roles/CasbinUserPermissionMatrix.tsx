@@ -214,7 +214,7 @@ export const CasbinUserPermissionMatrix: React.FC<{ active?: boolean }> = ({ act
                       <div className="px-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-muted/30 transition-colors">
                         <div className="flex items-center gap-3">
                           <Avatar className="h-10 w-10">
-                            <AvatarImage src={user.image_url || ''} alt={user.first_name} />
+                            <AvatarImage src={user.image_url ?? undefined} alt={user.first_name} />
                             <AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">
                               {getUserInitials(user.first_name, user.last_name)}
                             </AvatarFallback>

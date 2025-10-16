@@ -254,6 +254,25 @@ export async function getCurrentUserAction(): Promise<GetCurrentUserResult> {
   return accessToken ? { status: 'error', user: null } : { status: 'unauthenticated', user: null };
 }
 
+export async function checkUserExists(email: string): Promise<{ success: boolean; exists?: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${BACKEND_API_BASE}/auth/check-email?email=${encodeURIComponent(email)}`, {
+      method: 'GET',
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { success: false, error: err.error || 'API error' };
+    }
+
+    const data = await res.json();
+    return { success: true, exists: !!data.exists };
+  } catch (e) {
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export const newPassword = async (
   values: ResetPasswordValues,
   token?: string | null

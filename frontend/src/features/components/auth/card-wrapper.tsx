@@ -21,6 +21,7 @@ interface CardWrapperProps {
   backButtonLabel: string;
   backButtonHref: string;
   showSocial?: boolean;
+  socialCallbackUrl?: string;
 };
 
 export const CardWrapper = ({
@@ -29,6 +30,7 @@ export const CardWrapper = ({
   backButtonLabel,
   backButtonHref,
   showSocial 
+  , socialCallbackUrl
 }: CardWrapperProps) => {
   return (
     <Card className="w-[90%] sm:w-[360px] lg:w-[340px] xl:w-[380px] shadow-md">
@@ -40,8 +42,8 @@ export const CardWrapper = ({
       </CardContent>
       {showSocial && (
         <CardFooter className="flex flex-col gap-2">
-          <SocialAuthButton provider="google" />
-          <SocialAuthButton provider="github" />
+          <SocialAuthButton provider="google" callbackURL={socialCallbackUrl} />
+          <SocialAuthButton provider="github" callbackURL={socialCallbackUrl} />
         </CardFooter>
       )}
       <CardFooter>

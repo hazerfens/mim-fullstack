@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import {zodResolver} from "@hookform/resolvers/zod";
 
@@ -32,6 +32,9 @@ export const RegisterForm = () => {
   const [success, setSuccess] = useState<string | undefined>("");
   const [isPending, setIsPending] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const invitationToken = searchParams.get("invitation_token");
+  const invitationEmail = searchParams.get("email");
 
   const form = useForm({
     resolver: zodResolver(RegisterFormSchema),
@@ -41,6 +44,13 @@ export const RegisterForm = () => {
       password: "",
     },
   });
+
+  // If an invitation email is present, prefill and disable the email field
+  useEffect(() => {
+    if (invitationEmail) {
+      form.setValue("email", invitationEmail);
+    }
+  }, [invitationEmail]);
 
   const onSubmit = async (values: RegisterFormValues) => {
     setError("");
@@ -63,10 +73,16 @@ export const RegisterForm = () => {
         setError(res.message || "Kayıt başarısız oldu.");
       } else {
         setSuccess("Kayıt başarılı! Giriş sayfasına yönlendiriliyorsunuz...");
-        setTimeout(() => {
-          router.push("/auth/login");
-        }, 1000);
-      }
+        // If registration happened via an invitation, auto-accept it
+        if (invitationToken) {
+            // On registration success, if there is an invitation token, redirect to accept-invitation
+            setTimeout(() => {
+              if (invitationToken) {
+                router.push(`/accept-invitation/${invitationToken}`);
+              } else {
+                router.push("/dashboard?welcome=true");
+              }
+            }, 1000);
     } catch {
       setError("Kayıt işlemi sırasında bir hata oluştu.");
     } finally {
@@ -79,8 +95,9 @@ export const RegisterForm = () => {
       headerLabel="Kullanıcı hesabı oluşturun"
       backButtonLabel="Hesabınız var mı?"
       backButtonHref="/auth/login"
-      showSocial
+         backButtonHref={invitationToken ? `/auth/login?invitation_token=${invitationToken}&email=${invitationEmail || ''}` : '/auth/login'}
     >
+         socialCallbackUrl={invitationToken ? `/accept-invitation/${invitationToken}` : '/dashboard'}
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
           <div className="space-y-4 dark:text-neutral-600">

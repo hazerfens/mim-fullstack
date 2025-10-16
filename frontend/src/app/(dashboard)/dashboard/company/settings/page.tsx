@@ -1,34 +1,38 @@
 import React from 'react'
-import { getActiveCompanyAction, toggleCompanyActiveAction, Company as CompanyType } from '../../../../../features/actions/company-action'
-import { getServerSession } from '../../../../../lib/auth'
+import { getActiveCompanyAction, Company as CompanyType } from '@/features/actions/company-action'
+import { getServerSession } from '@/lib/auth'
 import { redirect } from 'next/navigation'
-import InlineAlert from '../../../../../components/ui/inline-alert'
-import DeleteCompanyPermanentForm from '../../../../../features/components/dashboard/settings/DeleteCompanyPermanentForm'
-import PassiveModal from '../../../../../features/components/dashboard/settings/PassiveModal'
-import SoftDeleteModal from '../../../../../features/components/dashboard/settings/SoftDeleteModal'
-import ExportDataModal from '../../../../../features/components/dashboard/settings/ExportDataModal'
+import InlineAlert from '@/components/ui/inline-alert'
+import CompanyDetailsForm from '@/features/components/company/company-details-form'
+import DeleteCompanyPermanentForm from '@/features/components/dashboard/settings/DeleteCompanyPermanentForm'
+import PassiveModal from '@/features/components/dashboard/settings/PassiveModal'
+import SoftDeleteModal from '@/features/components/dashboard/settings/SoftDeleteModal'
+import ExportDataModal from '@/features/components/dashboard/settings/ExportDataModal'
 
 const CompanySettings = async () => {
   const user = (await getServerSession());
   if (!user) redirect('/auth/login');
 
-  const PageContent = async () => {
-    // Server-side: fetch active company
-    const res = await getActiveCompanyAction();
-    let company: CompanyType | null = null;
-    if (res && res.status === 'success') {
-      company = res.data as CompanyType;
-    }
+  // Server-side: fetch active company
+  const res = await getActiveCompanyAction();
+  let company: CompanyType | null = null;
+  if (res && res.status === 'success') {
+    company = res.data as CompanyType;
+  }
 
-    let isOwner = false;
-    if (company && user) {
-      const userId = user.id;
-      const c = company as unknown as Record<string, unknown>;
-      const ownerId = (c?.user_id as string | undefined) || ((c?.user as Record<string, unknown>)?.id as string | undefined) || null;
-      if (ownerId && userId && ownerId.toString() === userId.toString()) {
-        isOwner = true;
-      }
-    }
+  // Determine if current user is the owner (supports user_id or nested user.id)
+  const isOwner = (() => {
+    if (!company || !user) return false;
+  const c = company as unknown as Record<string, unknown>;
+  const ownerId = (c.user_id as string | undefined) ?? ((c.user as Record<string, unknown>)?.id as string | undefined) ?? null;
+    const ownerMatch = ownerId != null && String(ownerId) === String(user.id);
+    // Super admins should be able to manage/delete any company in settings
+    if (user.role === 'super_admin') return true;
+    return ownerMatch;
+  })();
+
+  // Debug logs
+  console.log('[company-settings] activeCompany id:', company?.id, 'user:', user?.id, 'role:', user?.role, 'isOwner:', isOwner);
 
   return (
     <div className="space-y-6">
@@ -46,6 +50,8 @@ const CompanySettings = async () => {
             <p className="text-sm text-muted-foreground">Slug: {company.slug}</p>
           </div>
 
+          <CompanyDetailsForm company={company} isOwner={isOwner} />
+
           <div className="pt-4 border-t">
             {!isOwner && (
               <div className="mb-4">
@@ -58,11 +64,7 @@ const CompanySettings = async () => {
                 <h4 className="text-sm font-medium">Durum Değiştirme</h4>
                 <p className="text-sm text-muted-foreground">Şirketi pasif yaparak erişimi kısıtlayabilir veya yeniden etkinleştirebilirsiniz.</p>
                 <div className="pt-3">
-                  <form id={`toggle-active-${company.id}`} action={toggleCompanyActiveAction} className="inline">
-                    <input type="hidden" name="companyId" value={company.id} />
-                    <input type="hidden" name="isActive" value={String(!company.is_active)} />
-                    <PassiveModal companyId={company.id} isActive={company.is_active} />
-                  </form>
+                  <PassiveModal companyId={company.id} isActive={company.is_active} />
                 </div>
               </div>
 
@@ -74,13 +76,7 @@ const CompanySettings = async () => {
                 </div>
               </div>
 
-              <div className="p-4 border rounded-md">
-                <h4 className="text-sm font-medium">Kalıcı Silme</h4>
-                <p className="text-sm text-muted-foreground">Tüm veriler kalıcı olarak silinecek ve geri alınamaz.</p>
-                <div className="pt-3">
-                  <DeleteCompanyPermanentForm companyId={company.id} companyName={(company.adi || company.unvani || company.name || company.slug || 'Şirket').toString()} />
-                </div>
-              </div>
+              {/* Delete card moved into Company details area */}
 
               <div className="p-4 border rounded-md">
                 <h4 className="text-sm font-medium">Verileri Dışa Aktar</h4>
@@ -97,10 +93,6 @@ const CompanySettings = async () => {
       </div>
     </div>
   )
-    };
-
-  // Render the async content with the server-session user
-  return <PageContent />;
 }
 
 export default CompanySettings

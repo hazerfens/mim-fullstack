@@ -6,6 +6,7 @@ import { SessionProvider } from "@/components/providers/session-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
 // import { getAllCompaniesForAdminAction } from '@/features/actions/company-action';
 import { getCurrentUserAction } from "@/features/actions/auth-action";
+import { cookies } from 'next/headers';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -84,11 +85,22 @@ export default async function RootLayout({
 
   const initialUser = status === "success" ? user : null;
 
-  // Do not fetch companies server-side here. We prefer client-side persisted
-  // company data (localStorage) and client fetches on demand to avoid
-  // unnecessary server-side calls immediately after login.
-  const initialCompanies = null;
-  const initialActiveCompany = null;
+  // Read initial companies snapshot and active company from auth route
+  // cookies when available. This avoids an extra client-side fetch and
+  // hydrates the company store with server-side data.
+  let initialCompanies = null;
+  let initialActiveCompany = null;
+  try {
+    const cookieStore = await cookies();
+    const rawCompanies = cookieStore.get('initialCompanies')?.value ?? null;
+    const rawActive = cookieStore.get('initialActiveCompany')?.value ?? null;
+    if (rawCompanies) {
+      try { initialCompanies = JSON.parse(rawCompanies); } catch {}
+    }
+    if (rawActive) {
+      try { initialActiveCompany = JSON.parse(rawActive); } catch {}
+    }
+  } catch {}
 
   return (
     <html lang="en" suppressHydrationWarning>

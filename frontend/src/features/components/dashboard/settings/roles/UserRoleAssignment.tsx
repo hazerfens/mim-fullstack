@@ -191,7 +191,7 @@ export const UserRoleAssignment: React.FC<UserRoleAssignmentProps> = ({ onUpdate
                               <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                             )}
                             <Avatar className="h-9 w-9">
-                              <AvatarImage src={user.image_url || ''} alt={user.first_name} />
+                              <AvatarImage src={user.image_url ?? undefined} alt={user.first_name} />
                               <AvatarFallback className="bg-primary/10 text-primary font-medium">
                                 {getUserInitials(user.first_name, user.last_name)}
                               </AvatarFallback>

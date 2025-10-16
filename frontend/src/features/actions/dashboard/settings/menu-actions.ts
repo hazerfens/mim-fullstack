@@ -25,8 +25,9 @@ export async function createMenu(formData: FormData) {
     const title = formData.get('title') as string
     const description = formData.get('description') as string
     const slug = formData.get('slug') as string
-    const url = formData.get('url') as string
+  const url = formData.get('url') as string
     const is_active = formData.get('is_active') === 'on'
+  const order = parseInt(formData.get('order') as string) || 0
 
     if (!menu_category_id || menu_category_id.trim() === '') {
       throw new Error('Kategori seçimi zorunludur')
@@ -41,6 +42,7 @@ export async function createMenu(formData: FormData) {
         description,
         slug,
         url,
+        order,
         is_active,
       }),
     })
@@ -65,6 +67,7 @@ export async function updateMenu(menuId: string, formData: FormData) {
     const slug = formData.get('slug') as string
     const url = formData.get('url') as string
     const is_active = formData.get('is_active') === 'on'
+    const order = parseInt(formData.get('order') as string) || 0
 
     const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_API_URL}/admin/system/menus/${menuId}`, {
       method: 'PUT',
@@ -74,6 +77,7 @@ export async function updateMenu(menuId: string, formData: FormData) {
         description,
         slug,
         url,
+        order,
         is_active,
       }),
     })
@@ -155,11 +159,9 @@ export async function updateMenuCategory(categoryId: string, formData: FormData)
     const order = parseInt(formData.get('order') as string) || 0
     const is_active = formData.get('is_active') === 'on'
 
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/admin/system/menu-categories/${categoryId}`, {
+    const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_API_URL}/admin/system/menu-categories/${categoryId}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: await getAuthHeaders(),
       body: JSON.stringify({
         name,
         description,
@@ -185,8 +187,9 @@ export async function updateMenuCategory(categoryId: string, formData: FormData)
 // Delete menu category
 export async function deleteMenuCategory(categoryId: string) {
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/admin/system/menu-categories/${categoryId}`, {
+    const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_API_URL}/admin/system/menu-categories/${categoryId}`, {
       method: 'DELETE',
+      headers: await getAuthHeaders(),
     })
 
     if (!response.ok) {

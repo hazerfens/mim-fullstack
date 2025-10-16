@@ -28,7 +28,10 @@ export const LoginForm = () => {
   // Component artık sadece 'login' fonksiyonunu biliyor.
   
 
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  // Preserve callbackUrl or invitation_token flow
+  const callbackUrl = searchParams.get("callbackUrl");
+  const invitationToken = searchParams.get("invitation_token");
+  const invitationEmail = searchParams.get("email");
 
   const [error, setError] = useState<string | undefined>();
   const [success, setSuccess] = useState<string | undefined>();
@@ -68,7 +71,12 @@ export const LoginForm = () => {
           applyLoginResult(result.user ?? null);
         } catch {}
         await refreshSession();
-        router.push(callbackUrl);
+        if (invitationToken) {
+          // After login, redirect back to invitation acceptance page
+          router.push(`/accept-invitation/${invitationToken}`);
+        } else {
+          router.push(callbackUrl || "/");
+        }
       } else {
         setError(result.message || "Hatalı giriş");
         toast.error(result.message || "Hatalı giriş");
@@ -82,8 +90,9 @@ export const LoginForm = () => {
     <CardWrapper
       headerLabel="Hoşgeldiniz..."
       backButtonLabel="Yeni hesap oluştur?"
-      backButtonHref="/auth/register"
+      backButtonHref={invitationToken ? `/auth/register?invitation_token=${invitationToken}&email=${invitationEmail || ''}` : "/auth/register"}
       showSocial
+      socialCallbackUrl={invitationToken ? `/accept-invitation/${invitationToken}` : (callbackUrl || "/")}
     >
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -97,6 +106,7 @@ export const LoginForm = () => {
                     <Input
                       {...field}
                       type="email"
+                      defaultValue={invitationEmail ?? undefined}
                       disabled={isPending}
                       placeholder="E-Posta adresiniz"
                     />

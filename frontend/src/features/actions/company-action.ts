@@ -166,6 +166,44 @@ export async function getActiveCompanyAction() {
     if (initialActive) {
       try {
         const parsed = JSON.parse(initialActive);
+        // Try to enrich the snapshot with whether current user is owner
+        // by inspecting the initialUser cookie (if available) or by
+        // querying the members endpoint below when necessary.
+        let userId: string | null = null;
+        try {
+          const initialUserRaw = cookieStore.get('initialUser')?.value ?? null;
+          if (initialUserRaw) {
+            const parsedUser = JSON.parse(initialUserRaw);
+            userId = parsedUser?.id ?? parsedUser?.sub ?? null;
+          }
+        } catch {}
+
+        // If we have both company and user, try to fetch members to determine ownership.
+        try {
+          if (parsed && parsed.id && userId) {
+            const token = await getAccessToken();
+            if (token) {
+              const membersRes = await fetch(`${backendApiUrl}/company/${parsed.id}/members`, {
+                method: 'GET',
+                headers: await getAuthHeaders(),
+                cache: 'no-store',
+              });
+              if (membersRes.ok) {
+                const membersBody = await membersRes.json().catch(() => ({}));
+                const members = membersBody.members || [];
+                const myMember = members.find((m: any) => {
+                  // Compare with both user.id and user_id
+                  const uId = m?.user?.id ?? m?.user_id;
+                  return uId && String(uId) === String(userId);
+                });
+                parsed.is_owner = !!(myMember && myMember.is_owner);
+              }
+            }
+          }
+        } catch (e) {
+          /* ignore member fetch errors */
+        }
+
         return { status: 'success' as const, data: parsed };
       } catch {
         // fall through to normal fetch if parsing fails

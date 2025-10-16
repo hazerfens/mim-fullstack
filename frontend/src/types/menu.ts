@@ -6,6 +6,7 @@ export interface Menu {
   description?: string;
   slug?: string;
   url?: string;
+  order?: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;

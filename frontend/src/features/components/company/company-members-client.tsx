@@ -238,7 +238,7 @@ export default function CompanyMembersClient({ company }: CompanyMembersClientPr
                     <CardContent className="flex items-center justify-between p-6">
                       <div className="flex items-center gap-4">
                         <Avatar className="h-12 w-12">
-                          <AvatarImage src={member.user?.image_url} />
+                          <AvatarImage src={member.user?.image_url ?? undefined} />
                           <AvatarFallback className={!hasValidUser ? "bg-red-200 text-red-700" : ""}>
                             {avatarFallback}
                           </AvatarFallback>

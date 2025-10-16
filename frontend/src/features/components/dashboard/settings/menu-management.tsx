@@ -10,16 +10,19 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { Plus, Edit, Trash2, Eye, EyeOff, AlertTriangle, Database, Menu as MenuIcon } from 'lucide-react'
+import { Plus, Edit, Trash2, Eye, EyeOff, AlertTriangle, Database, Menu as MenuIcon, ChevronUp, ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
-import { createMenu, createMenuTables, deleteMenu, updateMenu, getMenus, createSubMenu, updateSubMenu, deleteSubMenu, createMenuCategory } from '@/features/actions/dashboard/settings/menu-actions'
+import { createMenu, createMenuTables, deleteMenu, updateMenu, getMenus, createSubMenu, updateSubMenu, deleteSubMenu, createMenuCategory, updateMenuCategory, deleteMenuCategory } from '@/features/actions/dashboard/settings/menu-actions'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import type { Menu, MenuCategory, SubMenu } from '@/types/menu'
+
+type FeaturedItem = { id: string; name: string }
 
 const MenuManagement = () => {
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [loading, setLoading] = useState(true)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [createCategoryDialogOpen, setCreateCategoryDialogOpen] = useState(false)
   const [editingMenu, setEditingMenu] = useState<Menu | null>(null)
   const [createSubMenuDialogOpen, setCreateSubMenuDialogOpen] = useState(false)
   const [editingSubMenu, setEditingSubMenu] = useState<SubMenu | null>(null)
@@ -28,7 +31,10 @@ const MenuManagement = () => {
   const [categorySlug, setCategorySlug] = useState('')
   const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null)
   const [deleteSubMenuId, setDeleteSubMenuId] = useState<string | null>(null)
+  const [editingCategory, setEditingCategory] = useState<MenuCategory | null>(null)
+  const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null)
   const [createTablesConfirmOpen, setCreateTablesConfirmOpen] = useState(false)
+  const [expandedMenuIds, setExpandedMenuIds] = useState<Set<string>>(new Set())
 
   // Load menu categories
   const loadMenuCategories = async () => {
@@ -52,6 +58,7 @@ const MenuManagement = () => {
     try {
       await createMenuCategory(formData)
       setSelectedMenuCategoryId('')
+      setCreateCategoryDialogOpen(false)
       setCategoryName('')
       setCategorySlug('')
       loadMenuCategories()
@@ -59,6 +66,40 @@ const MenuManagement = () => {
     } catch (error) {
       console.error('Kategori eklenirken hata:', error)
       toast.error('Kategori eklenirken hata oluştu')
+    }
+  }
+
+  // Handle update category
+  const handleUpdateCategory = async (formData: FormData) => {
+    if (!editingCategory) return
+
+    try {
+      await updateMenuCategory(editingCategory.id, formData)
+      setEditingCategory(null)
+      loadMenuCategories()
+      toast.success('Kategori başarıyla güncellendi')
+    } catch (error) {
+      console.error('Kategori güncellenirken hata:', error)
+      toast.error('Kategori güncellenirken hata oluştu')
+    }
+  }
+
+  // Handle delete category
+  const handleDeleteCategory = async (categoryId: string) => {
+    setDeleteCategoryId(categoryId)
+  }
+
+  const confirmDeleteCategory = async () => {
+    if (!deleteCategoryId) return
+
+    try {
+      await deleteMenuCategory(deleteCategoryId)
+      loadMenuCategories()
+      setDeleteCategoryId(null)
+      toast.success('Kategori silindi')
+    } catch (error) {
+      console.error('Kategori silinirken hata:', error)
+      toast.error('Kategori silinirken hata oluştu')
     }
   }
 
@@ -82,6 +123,7 @@ const MenuManagement = () => {
     try {
       await updateMenu(editingMenu.id, formData)
       setEditingMenu(null)
+  setCreateDialogOpen(false)
       loadMenuCategories()
     } catch (error) {
       console.error('Menü güncellenirken hata:', error)
@@ -145,6 +187,7 @@ const MenuManagement = () => {
     try {
       await updateSubMenu(editingSubMenu.id, formData)
       setEditingSubMenu(null)
+  setCreateSubMenuDialogOpen(false)
       loadMenuCategories()
     } catch (error) {
       console.error('Alt menü güncellenirken hata:', error)
@@ -182,11 +225,112 @@ const MenuManagement = () => {
   // Update slug automatically when category name changes
   useEffect(() => {
     if (categoryName) {
-      setCategorySlug(`/${slugify(categoryName)}`)
+      setCategorySlug(slugify(categoryName))
     } else {
       setCategorySlug('')
     }
   }, [categoryName])
+
+  const toggleExpand = (id: string) => {
+    setExpandedMenuIds((prev) => {
+      const copy = new Set(prev)
+      if (copy.has(id)) copy.delete(id)
+      else copy.add(id)
+      return copy
+    })
+  }
+
+  const [reordering, setReordering] = useState(false)
+
+  // Move menu within the same category: direction = -1 (up), +1 (down)
+  const moveMenu = async (categoryId: string, menuIndex: number, direction: number) => {
+    try {
+      const category = menuCategories.find(c => c.id === categoryId)
+      if (!category || !category.menus) return
+      const menus = category.menus
+      const otherIndex = menuIndex + direction
+      if (otherIndex < 0 || otherIndex >= menus.length) return
+
+      const a = menus[menuIndex]
+      const b = menus[otherIndex]
+  // using index-based order assignment
+
+      setReordering(true)
+
+      const fdA = new FormData()
+      fdA.append('title', a.title ?? '')
+      fdA.append('slug', a.slug ?? '')
+      fdA.append('description', a.description ?? '')
+      fdA.append('url', a.url ?? '')
+      if (a.is_active) fdA.append('is_active', 'on')
+  // assign new order based on index positions to avoid identical zero values
+  fdA.append('order', String(otherIndex))
+      await updateMenu(a.id, fdA)
+
+      const fdB = new FormData()
+      fdB.append('title', b.title ?? '')
+      fdB.append('slug', b.slug ?? '')
+      fdB.append('description', b.description ?? '')
+      fdB.append('url', b.url ?? '')
+      if (b.is_active) fdB.append('is_active', 'on')
+  fdB.append('order', String(menuIndex))
+      await updateMenu(b.id, fdB)
+
+      await loadMenuCategories()
+      toast.success('Menü sıralaması güncellendi')
+    } catch (error) {
+      console.error('Menu reorder error:', error)
+      toast.error('Menü sıralaması güncellenirken hata oluştu')
+    } finally {
+      setReordering(false)
+    }
+  }
+
+  // Move sub-menu within its parent menu: direction = -1 (up), +1 (down)
+  const moveSubMenu = async (menuId: string, subIndex: number, direction: number) => {
+    try {
+      const parentMenu = menuCategories.flatMap(c => c.menus ?? []).find(m => m.id === menuId)
+      if (!parentMenu || !parentMenu.sub_menus) return
+      const subs = parentMenu.sub_menus
+      const otherIndex = subIndex + direction
+      if (otherIndex < 0 || otherIndex >= subs.length) return
+
+      const a = subs[subIndex]
+      const b = subs[otherIndex]
+  // using index-based order assignment
+
+      setReordering(true)
+
+      const fdA = new FormData()
+      fdA.append('menu_id', a.menu_id)
+      fdA.append('name', a.name ?? '')
+      fdA.append('slug', a.slug ?? '')
+      fdA.append('description', a.description ?? '')
+      fdA.append('image_url', a.image_url ?? '')
+      if (a.is_active) fdA.append('is_active', 'on')
+  // assign new order based on position
+  fdA.append('order', String(otherIndex))
+      await updateSubMenu(a.id, fdA)
+
+      const fdB = new FormData()
+      fdB.append('menu_id', b.menu_id)
+      fdB.append('name', b.name ?? '')
+      fdB.append('slug', b.slug ?? '')
+      fdB.append('description', b.description ?? '')
+      fdB.append('image_url', b.image_url ?? '')
+      if (b.is_active) fdB.append('is_active', 'on')
+  fdB.append('order', String(subIndex))
+      await updateSubMenu(b.id, fdB)
+
+      await loadMenuCategories()
+      toast.success('Alt menü sıralaması güncellendi')
+    } catch (error) {
+      console.error('SubMenu reorder error:', error)
+      toast.error('Alt menü sıralaması güncellenirken hata oluştu')
+    } finally {
+      setReordering(false)
+    }
+  }
 
   if (loading) {
     return <div>Yükleniyor...</div>
@@ -201,7 +345,7 @@ const MenuManagement = () => {
           <Button variant="outline" onClick={handleCreateMenuTables}>
             Tablo Oluştur
           </Button>
-          <Dialog>
+          <Dialog open={createCategoryDialogOpen} onOpenChange={setCreateCategoryDialogOpen}>
             <DialogTrigger asChild>
               <Button variant="outline" className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -213,6 +357,12 @@ const MenuManagement = () => {
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
                   <MenuIcon className="h-5 w-5 text-primary" />
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="order" className="text-sm font-medium">Sıra</Label>
+                    <Input id="order" name="order" type="number" defaultValue={0} min={0} className="w-full" />
+                  </div>
+                </div>
                 <div>
                   <DialogTitle className="text-lg font-semibold">Yeni Kategori Ekle</DialogTitle>
                   <DialogDescription className="text-sm text-muted-foreground">
@@ -220,21 +370,8 @@ const MenuManagement = () => {
                   </DialogDescription>
                 </div>
               </div>
-              <form action={handleCreateCategory} className="space-y-6">
-                <div className="space-y-2">
-                  <Label htmlFor="menu_category_id" className="text-sm font-medium">Bağlı Kategori</Label>
-                  <Select value={selectedMenuCategoryId} onValueChange={setSelectedMenuCategoryId}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Kategori seçin" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {menuCategories.map((category) => (
-                        <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <input type="hidden" name="menu_category_id" value={selectedMenuCategoryId} />
-                </div>
+              <form onSubmit={(e) => { e.preventDefault(); handleCreateCategory(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-6">
+                {/* No parent category required when creating a category */}
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -299,12 +436,8 @@ const MenuManagement = () => {
                   </div>
                 </div>
 
-                <div className="flex justify-end space-x-3 pt-4 border-t">
-                  <Dialog>
-                    <DialogTrigger asChild>
-                      <Button type="button" variant="outline">İptal</Button>
-                    </DialogTrigger>
-                  </Dialog>
+                  <div className="flex justify-end space-x-3 pt-4 border-t">
+                    <Button type="button" variant="outline" onClick={() => setCreateCategoryDialogOpen(false)}>İptal</Button>
                   <Button type="submit" className="gap-2">
                     <Plus className="w-4 h-4" />
                     Ekle
@@ -313,7 +446,12 @@ const MenuManagement = () => {
               </form>
             </DialogContent>
           </Dialog>
-          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+          <Dialog open={createDialogOpen} onOpenChange={(open) => {
+            setCreateDialogOpen(open)
+            if (open && !selectedMenuCategoryId && menuCategories.length > 0) {
+              setSelectedMenuCategoryId(menuCategories[0].id)
+            }
+          }}>
             <DialogTrigger asChild>
               <Button className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -332,7 +470,7 @@ const MenuManagement = () => {
                   </DialogDescription>
                 </div>
               </div>
-              <form action={handleCreateMenu} className="space-y-6">
+              <form onSubmit={(e) => { e.preventDefault(); handleCreateMenu(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="menu_category_id" className="text-sm font-medium">Kategori</Label>
                   <Select value={selectedMenuCategoryId} onValueChange={setSelectedMenuCategoryId}>
@@ -431,7 +569,7 @@ const MenuManagement = () => {
                   </DialogDescription>
                 </div>
               </div>
-              <form action={handleCreateSubMenu} className="space-y-6">
+              <form onSubmit={(e) => { e.preventDefault(); handleCreateSubMenu(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="sub_menu_id" className="text-sm font-medium">Üst Menü</Label>
                   <Select name="menu_id" required>
@@ -553,310 +691,198 @@ const MenuManagement = () => {
                   </CardTitle>
                   <CardDescription>{category.description}</CardDescription>
                 </div>
+                <div className="flex gap-2 items-center">
+                  <Button variant="outline" size="sm" onClick={() => setEditingCategory(category)}><Edit className="w-4 h-4" /></Button>
+                  <Button variant="ghost" size="sm" onClick={() => handleDeleteCategory(category.id)}><Trash2 className="w-4 h-4" /></Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {/* Menus in this category */}
-                {category.menus && category.menus.length > 0 && (
+                {category.menus && category.menus.length > 0 ? (
                   <div>
                     <h4 className="font-medium mb-2">Menüler ({category.menus.length})</h4>
-                    <div className="space-y-3">
-                      {category.menus.map((menu) => (
-                        <div key={menu.id} className="p-4 border rounded-lg bg-muted/30">
-                          <div className="flex justify-between items-start mb-3">
-                            <div>
-                              <h5 className="font-medium">{menu.title}</h5>
-                              <p className="text-sm text-muted-foreground">{menu.description}</p>
-                              <div className="flex gap-2 mt-2">
-                                <Badge variant="outline">Alt Menüler: {menu.sub_menus?.length || 0}</Badge>
-                                <Badge variant="outline">Öne Çıkan: {menu.featured_items?.length || 0}</Badge>
-                              </div>
-                            </div>
-                            <div className="flex gap-2">
-                                <Dialog>
-                                  <DialogTrigger asChild>
-                                    <Button variant="outline" size="sm" className="gap-1">
-                                      <Edit className="w-4 h-4" />
-                                    </Button>
-                                  </DialogTrigger>
-                                  <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-                                    <div className="flex items-center space-x-3 mb-4">
-                                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                                        <Edit className="h-5 w-5 text-primary" />
-                                      </div>
-                                      <div>
-                                        <DialogTitle className="text-lg font-semibold">Menü Düzenle</DialogTitle>
-                                        <DialogDescription className="text-sm text-muted-foreground">
-                                          Menü bilgilerini güncelleyin.
-                                        </DialogDescription>
-                                      </div>
-                                    </div>
-                                    <form action={handleUpdateMenu} className="space-y-6">
-                                      <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                          <Label htmlFor="edit_title" className="text-sm font-medium">Başlık</Label>
-                                          <Input
-                                            id="edit_title"
-                                            name="title"
-                                            defaultValue={editingMenu?.title}
-                                            placeholder="Menü başlığı"
-                                            required
-                                            className="w-full"
-                                          />
-                                        </div>
-                                        <div className="space-y-2">
-                                          <Label htmlFor="edit_slug" className="text-sm font-medium">Slug</Label>
-                                          <Input
-                                            id="edit_slug"
-                                            name="slug"
-                                            defaultValue={editingMenu?.slug}
-                                            placeholder="/menu-slug"
-                                            required
-                                            className="w-full"
-                                          />
-                                        </div>
-                                      </div>
-
-                                      <div className="space-y-2">
-                                        <Label htmlFor="edit_description" className="text-sm font-medium">Açıklama</Label>
-                                        <Textarea
-                                          id="edit_description"
-                                          name="description"
-                                          defaultValue={editingMenu?.description}
-                                          placeholder="Menü açıklaması..."
-                                          className="min-h-[80px] resize-none"
-                                        />
-                                      </div>
-
-                                      <div className="space-y-2">
-                                        <Label htmlFor="edit_url" className="text-sm font-medium">URL (Opsiyonel)</Label>
-                                        <Input
-                                          id="edit_url"
-                                          name="url"
-                                          defaultValue={editingMenu?.url}
-                                          placeholder="/sayfa-url (alt menü olmadan doğrudan link için)"
-                                          className="w-full"
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                          Alt menü olmadan doğrudan link için URL girin.
-                                        </p>
-                                      </div>
-
-                                      <div className="flex items-center justify-between pt-4 border-t">
-                                        <div className="flex items-center space-x-2">
-                                          <Switch
-                                            id="edit_is_active"
-                                            name="is_active"
-                                            defaultChecked={editingMenu?.is_active}
-                                          />
-                                          <Label htmlFor="edit_is_active" className="text-sm font-medium">Aktif</Label>
-                                        </div>
-                                        <div className="flex space-x-3">
-                                          <Button type="button" variant="outline" onClick={() => setEditingMenu(null)}>
-                                            İptal
-                                          </Button>
-                                          <Button type="submit" className="gap-2">
-                                            <Edit className="w-4 h-4" />
-                                            Güncelle
-                                          </Button>
-                                        </div>
-                                      </div>
-                                    </form>
-                                  </DialogContent>
-                                </Dialog>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleDeleteMenu(menu.id)}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </div>
-
-                          {/* Sub-Menus */}
-                          {menu.sub_menus && menu.sub_menus.length > 0 && (
-                            <div className="mt-3">
-                              <h6 className="text-sm font-medium mb-2">Alt Menüler</h6>
-                              <div className="space-y-2">
-                                {menu.sub_menus.map((subMenu) => (
-                                  <div key={subMenu.id} className="p-2 border rounded bg-background">
-                                    <div className="flex justify-between items-start">
-                                      <div>
-                                        <h6 className="text-sm font-medium">{subMenu.name}</h6>
-                                        <p className="text-xs text-muted-foreground">{subMenu.description}</p>
-                                      </div>
-                                      <div className="flex gap-1">
-                                        <Dialog>
-                                          <DialogTrigger asChild>
-                                            <Button variant="outline" size="sm" onClick={() => setEditingSubMenu(subMenu)} className="gap-1">
-                                              <Edit className="w-3 h-3" />
-                                            </Button>
-                                          </DialogTrigger>
-                                          <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-                                            <div className="flex items-center space-x-3 mb-4">
-                                              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                                                <Edit className="h-5 w-5 text-primary" />
-                                              </div>
-                                              <div>
-                                                <DialogTitle className="text-lg font-semibold">Alt Menü Düzenle</DialogTitle>
-                                                <DialogDescription className="text-sm text-muted-foreground">
-                                                  Alt menü bilgilerini güncelleyin.
-                                                </DialogDescription>
-                                              </div>
-                                            </div>
-                                            <form action={handleUpdateSubMenu} className="space-y-6">
-                                              <div className="space-y-2">
-                                                <Label htmlFor="edit_submenu_menu_id" className="text-sm font-medium">Üst Menü</Label>
-                                                <Select
-                                                  name="menu_id"
-                                                  defaultValue={editingSubMenu?.menu_id}
-                                                  required
-                                                >
-                                                  <SelectTrigger className="w-full">
-                                                    <SelectValue placeholder="Menü seçin..." />
-                                                  </SelectTrigger>
-                                                  <SelectContent>
-                                                    {menuCategories.flatMap(cat =>
-                                                      cat.menus?.map(m => (
-                                                        <SelectItem key={m.id} value={m.id}>
-                                                          <div className="flex flex-col">
-                                                            <span className="font-medium">{m.title}</span>
-                                                            <span className="text-xs text-muted-foreground">{cat.name}</span>
-                                                          </div>
-                                                        </SelectItem>
-                                                      )) || []
-                                                    )}
-                                                  </SelectContent>
-                                                </Select>
-                                              </div>
-
-                                              <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-2">
-                                                  <Label htmlFor="edit_submenu_name" className="text-sm font-medium">Ad</Label>
-                                                  <Input
-                                                    id="edit_submenu_name"
-                                                    name="name"
-                                                    defaultValue={editingSubMenu?.name}
-                                                    placeholder="Alt menü adı"
-                                                    required
-                                                    className="w-full"
-                                                  />
-                                                </div>
-                                                <div className="space-y-2">
-                                                  <Label htmlFor="edit_submenu_slug" className="text-sm font-medium">Slug</Label>
-                                                  <Input
-                                                    id="edit_submenu_slug"
-                                                    name="slug"
-                                                    defaultValue={editingSubMenu?.slug}
-                                                    placeholder="/alt-menu-slug"
-                                                    required
-                                                    className="w-full"
-                                                  />
-                                                </div>
-                                              </div>
-
-                                              <div className="space-y-2">
-                                                <Label htmlFor="edit_submenu_description" className="text-sm font-medium">Açıklama</Label>
-                                                <Textarea
-                                                  id="edit_submenu_description"
-                                                  name="description"
-                                                  defaultValue={editingSubMenu?.description}
-                                                  placeholder="Alt menü açıklaması..."
-                                                  className="min-h-[80px] resize-none"
-                                                />
-                                              </div>
-
-                                              <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-2">
-                                                  <Label htmlFor="edit_submenu_image_url" className="text-sm font-medium">Resim URL</Label>
-                                                  <Input
-                                                    id="edit_submenu_image_url"
-                                                    name="image_url"
-                                                    defaultValue={editingSubMenu?.image_url}
-                                                    placeholder="https://..."
-                                                    className="w-full"
-                                                  />
-                                                </div>
-                                                <div className="space-y-2">
-                                                  <Label htmlFor="edit_submenu_order" className="text-sm font-medium">Sıra</Label>
-                                                  <Input
-                                                    id="edit_submenu_order"
-                                                    name="order"
-                                                    type="number"
-                                                    defaultValue={editingSubMenu?.order}
-                                                    min="0"
-                                                    className="w-full"
-                                                  />
-                                                </div>
-                                              </div>
-
-                                              <div className="flex items-center justify-between pt-4 border-t">
-                                                <div className="flex items-center space-x-2">
-                                                  <Switch
-                                                    id="edit_submenu_is_active"
-                                                    name="is_active"
-                                                    defaultChecked={editingSubMenu?.is_active}
-                                                  />
-                                                  <Label htmlFor="edit_submenu_is_active" className="text-sm font-medium">Aktif</Label>
-                                                </div>
-                                                <div className="flex space-x-3">
-                                                  <Button type="button" variant="outline" onClick={() => setEditingSubMenu(null)}>
-                                                    İptal
-                                                  </Button>
-                                                  <Button type="submit" className="gap-2">
-                                                    <Edit className="w-4 h-4" />
-                                                    Güncelle
-                                                  </Button>
-                                                </div>
-                                              </div>
-                                            </form>
-                                          </DialogContent>
-                                        </Dialog>
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => handleDeleteSubMenu(subMenu.id)}
-                                        >
-                                          <Trash2 className="w-3 h-3" />
+                    <div className="overflow-x-auto">
+                      <table className="w-full table-auto">
+                        <thead>
+                          <tr>
+                            <th className="text-left p-2">Başlık</th>
+                            <th className="text-left p-2">Açıklama</th>
+                            <th className="text-left p-2">Sıra</th>
+                            <th className="text-left p-2">Alt Menüler</th>
+                            <th className="text-left p-2">Öne Çıkan</th>
+                            <th className="text-left p-2">Durum</th>
+                            <th className="text-right p-2">İşlemler</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {category.menus.map((menu) => (
+                            <React.Fragment key={menu.id}>
+                              <tr className="border-t">
+                                <td className="p-2 align-top">
+                                  <div className="font-medium">{menu.title}</div>
+                                </td>
+                                <td className="p-2 align-top text-sm text-muted-foreground">{menu.description}</td>
+                                <td className="p-2 align-top">{menu.order ?? 0}</td>
+                                <td className="p-2 align-top">
+                                  <Badge variant="outline">{menu.sub_menus?.length || 0}</Badge>
+                                </td>
+                                <td className="p-2 align-top">
+                                  <Badge variant="outline">{menu.featured_items?.length || 0}</Badge>
+                                </td>
+                                <td className="p-2 align-top">
+                                  {menu.is_active ? <Badge variant="default">Aktif</Badge> : <Badge variant="secondary">Pasif</Badge>}
+                                </td>
+                                <td className="p-2 align-top text-right">
+                                  <div className="flex justify-end gap-2 items-center">
+                                    <Dialog open={editingMenu?.id === menu.id} onOpenChange={(open) => open ? setEditingMenu(menu) : setEditingMenu(null)}>
+                                      <DialogTrigger asChild>
+                                        <Button variant="outline" size="sm" className="gap-1" onClick={() => setEditingMenu(menu)}>
+                                          <Edit className="w-4 h-4" />
                                         </Button>
-                                      </div>
+                                      </DialogTrigger>
+                                      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+                                        {/* Edit Menu Form */}
+                                        <div className="flex items-center space-x-3 mb-4">
+                                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                                            <Edit className="h-5 w-5 text-primary" />
+                                          </div>
+                                          <div className="grid grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                              <Label htmlFor="edit_order" className="text-sm font-medium">Sıra</Label>
+                                              <Input id="edit_order" name="order" defaultValue={editingMenu?.order ?? 0} type="number" min={0} className="w-full" />
+                                            </div>
+                                          </div>
+                                          <div>
+                                            <DialogTitle className="text-lg font-semibold">Menü Düzenle</DialogTitle>
+                                            <DialogDescription className="text-sm text-muted-foreground">Menü bilgilerini güncelleyin.</DialogDescription>
+                                          </div>
+                                        </div>
+                                        <form onSubmit={(e) => { e.preventDefault(); handleUpdateMenu(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-6">
+                                          <div className="grid grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                              <Label htmlFor="edit_title" className="text-sm font-medium">Başlık</Label>
+                                              <Input id="edit_title" name="title" defaultValue={editingMenu?.title} placeholder="Menü başlığı" required className="w-full" />
+                                            </div>
+                                            <div className="space-y-2">
+                                              <Label htmlFor="edit_slug" className="text-sm font-medium">Slug</Label>
+                                              <Input id="edit_slug" name="slug" defaultValue={editingMenu?.slug} placeholder="/menu-slug" required className="w-full" />
+                                            </div>
+                                          </div>
+                                          <div className="space-y-2">
+                                            <Label htmlFor="edit_description" className="text-sm font-medium">Açıklama</Label>
+                                            <Textarea id="edit_description" name="description" defaultValue={editingMenu?.description} placeholder="Menü açıklaması..." className="min-h-[80px] resize-none" />
+                                          </div>
+                                          <div className="space-y-2">
+                                            <Label htmlFor="edit_url" className="text-sm font-medium">URL (Opsiyonel)</Label>
+                                            <Input id="edit_url" name="url" defaultValue={editingMenu?.url} placeholder="/sayfa-url (alt menü olmadan doğrudan link için)" className="w-full" />
+                                            <p className="text-xs text-muted-foreground">Alt menü olmadan doğrudan link için URL girin.</p>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-4 border-t">
+                                            <div className="flex items-center space-x-2">
+                                              <Switch id="edit_is_active" name="is_active" defaultChecked={editingMenu?.is_active} />
+                                              <Label htmlFor="edit_is_active" className="text-sm font-medium">Aktif</Label>
+                                            </div>
+                                            <div className="flex space-x-3">
+                                              <Button type="button" variant="outline" onClick={() => setEditingMenu(null)}>İptal</Button>
+                                              <Button type="submit" className="gap-2"><Edit className="w-4 h-4" />Güncelle</Button>
+                                            </div>
+                                          </div>
+                                        </form>
+                                      </DialogContent>
+                                    </Dialog>
+                                    <Button variant="outline" size="sm" onClick={() => handleDeleteMenu(menu.id)}><Trash2 className="w-4 h-4" /></Button>
+                                    <div className="flex items-center space-x-1">
+                                      <Button variant="ghost" size="sm" aria-label="Move menu up" disabled={reordering || category.menus!.indexOf(menu) === 0} onClick={() => moveMenu(category.id, category.menus!.indexOf(menu), -1)}>
+                                        <ChevronUp className="w-4 h-4" />
+                                      </Button>
+                                      <Button variant="ghost" size="sm" aria-label="Move menu down" disabled={reordering || category.menus!.indexOf(menu) === category.menus!.length - 1} onClick={() => moveMenu(category.id, category.menus!.indexOf(menu), 1)}>
+                                        <ChevronDown className="w-4 h-4" />
+                                      </Button>
                                     </div>
+                                    <Button variant="ghost" size="sm" onClick={() => toggleExpand(menu.id)}>{expandedMenuIds.has(menu.id) ? 'Gizle' : 'Alt Menüler'}</Button>
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Featured Items */}
-                          {menu.featured_items && menu.featured_items.length > 0 && (
-                            <div className="mt-3">
-                              <h6 className="text-sm font-medium mb-2">Öne Çıkan Ürünler</h6>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                {menu.featured_items.slice(0, 4).map((item) => (
-                                  <div key={item.id} className="p-2 border rounded text-xs">
-                                    {item.name}
-                                  </div>
-                                ))}
-                                {menu.featured_items.length > 4 && (
-                                  <div className="p-2 border rounded text-xs text-muted-foreground">
-                                    +{menu.featured_items.length - 4} daha fazla
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                                </td>
+                              </tr>
+                              {expandedMenuIds.has(menu.id) && (
+                                <tr>
+                                  <td colSpan={7} className="p-2 bg-background">
+                                    <div className="text-sm font-medium mb-2">Alt Menüler</div>
+                                    <div className="grid gap-2">
+                                      {menu.sub_menus?.map((subMenu, idx) => (
+                                        <div key={subMenu.id} className="flex justify-between items-start p-2 border rounded bg-white">
+                                          <div>
+                                            <div className="font-medium">{subMenu.name}</div>
+                                            <div className="text-xs text-muted-foreground">{subMenu.description}</div>
+                                          </div>
+                                          <div className="flex gap-2">
+                                            <Dialog open={editingSubMenu?.id === subMenu.id} onOpenChange={(open) => open ? setEditingSubMenu(subMenu) : setEditingSubMenu(null)}>
+                                              <DialogTrigger asChild>
+                                                <Button variant="outline" size="sm" onClick={() => setEditingSubMenu(subMenu)} className="gap-1"><Edit className="w-3 h-3" /></Button>
+                                              </DialogTrigger>
+                                              <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+                                                <div className="flex items-center space-x-3 mb-4">
+                                                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10"><Edit className="h-5 w-5 text-primary" /></div>
+                                                  <div>
+                                                    <DialogTitle className="text-lg font-semibold">Alt Menü Düzenle</DialogTitle>
+                                                    <DialogDescription className="text-sm text-muted-foreground">Alt menü bilgilerini güncelleyin.</DialogDescription>
+                                                  </div>
+                                                </div>
+                                                <form onSubmit={(e) => { e.preventDefault(); handleUpdateSubMenu(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-6">
+                                                  <div className="space-y-2">
+                                                    <Label htmlFor="edit_submenu_menu_id" className="text-sm font-medium">Üst Menü</Label>
+                                                    <Select name="menu_id" defaultValue={editingSubMenu?.menu_id} required>
+                                                      <SelectTrigger className="w-full"><SelectValue placeholder="Menü seçin..." /></SelectTrigger>
+                                                      <SelectContent>{menuCategories.flatMap(cat => cat.menus?.map(m => (
+                                                        <SelectItem key={m.id} value={m.id}><div className="flex flex-col"><span className="font-medium">{m.title}</span><span className="text-xs text-muted-foreground">{cat.name}</span></div></SelectItem>
+                                                      )) || [])}</SelectContent>
+                                                    </Select>
+                                                  </div>
+                                                  <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-2"><Label htmlFor="edit_submenu_name" className="text-sm font-medium">Ad</Label><Input id="edit_submenu_name" name="name" defaultValue={editingSubMenu?.name} placeholder="Alt menü adı" required className="w-full" /></div>
+                                                    <div className="space-y-2"><Label htmlFor="edit_submenu_slug" className="text-sm font-medium">Slug</Label><Input id="edit_submenu_slug" name="slug" defaultValue={editingSubMenu?.slug} placeholder="/alt-menu-slug" required className="w-full" /></div>
+                                                  </div>
+                                                  <div className="space-y-2"><Label htmlFor="edit_submenu_description" className="text-sm font-medium">Açıklama</Label><Textarea id="edit_submenu_description" name="description" defaultValue={editingSubMenu?.description} placeholder="Alt menü açıklaması..." className="min-h-[80px] resize-none" /></div>
+                                                  <div className="grid grid-cols-2 gap-4"><div className="space-y-2"><Label htmlFor="edit_submenu_image_url" className="text-sm font-medium">Resim URL</Label><Input id="edit_submenu_image_url" name="image_url" defaultValue={editingSubMenu?.image_url} placeholder="https://..." className="w-full" /></div><div className="space-y-2"><Label htmlFor="edit_submenu_order" className="text-sm font-medium">Sıra</Label><Input id="edit_submenu_order" name="order" type="number" defaultValue={editingSubMenu?.order} min="0" className="w-full" /></div></div>
+                                                  <div className="flex items-center justify-between pt-4 border-t"><div className="flex items-center space-x-2"><Switch id="edit_submenu_is_active" name="is_active" defaultChecked={editingSubMenu?.is_active} /><Label htmlFor="edit_submenu_is_active" className="text-sm font-medium">Aktif</Label></div><div className="flex space-x-3"><Button type="button" variant="outline" onClick={() => setEditingSubMenu(null)}>İptal</Button><Button type="submit" className="gap-2"><Edit className="w-4 h-4" />Güncelle</Button></div></div>
+                                                </form>
+                                              </DialogContent>
+                                            </Dialog>
+                                            <div className="flex items-center space-x-1">
+                                              <Button variant="ghost" size="sm" aria-label="Move submenu up" disabled={reordering || idx === 0} onClick={() => moveSubMenu(menu.id, idx, -1)}>
+                                                <ChevronUp className="w-3 h-3" />
+                                              </Button>
+                                              <Button variant="ghost" size="sm" aria-label="Move submenu down" disabled={reordering || idx === (menu.sub_menus?.length ?? 0) - 1} onClick={() => moveSubMenu(menu.id, idx, 1)}>
+                                                <ChevronDown className="w-3 h-3" />
+                                              </Button>
+                                            </div>
+                                            <Button variant="outline" size="sm" onClick={() => handleDeleteSubMenu(subMenu.id)}><Trash2 className="w-3 h-3" /></Button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                      {menu.featured_items && menu.featured_items.length > 0 && (
+                                        <div className="mt-3">
+                                          <h6 className="text-sm font-medium mb-2">Öne Çıkan Ürünler</h6>
+                                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                            {menu.featured_items.slice(0, 4).map((item: FeaturedItem) => (
+                                              <div key={item.id} className="p-2 border rounded text-xs">{item.name}</div>
+                                            ))}
+                                            {menu.featured_items.length > 4 && <div className="p-2 border rounded text-xs text-muted-foreground">+{menu.featured_items.length - 4} daha fazla</div>}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
-                )}
-
-                {(!category.menus || category.menus.length === 0) && (
-                  <div className="text-center py-4 text-muted-foreground text-sm">
-                    Bu kategoride henüz menü oluşturulmamış
-                  </div>
+                ) : (
+                  <div className="text-center py-4 text-muted-foreground text-sm">Bu kategoride henüz menü oluşturulmamış</div>
                 )}
               </div>
             </CardContent>
@@ -889,6 +915,68 @@ const MenuManagement = () => {
               <AlertDialogCancel className="px-4 py-2">İptal</AlertDialogCancel>
               <AlertDialogAction
                 onClick={confirmDeleteMenu}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 px-4 py-2"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Sil
+              </AlertDialogAction>
+            </div>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Edit Category Dialog */}
+      <Dialog open={!!editingCategory} onOpenChange={(open) => { if (!open) setEditingCategory(null) }}>
+        <DialogContent className="sm:max-w-[500px]">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+              <Edit className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <DialogTitle className="text-lg font-semibold">Kategori Düzenle</DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">Kategori bilgilerini güncelleyin.</DialogDescription>
+            </div>
+          </div>
+          <form onSubmit={(e) => { e.preventDefault(); handleUpdateCategory(new FormData(e.currentTarget as HTMLFormElement)) }} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_category_name" className="text-sm font-medium">Kategori Adı</Label>
+              <Input id="edit_category_name" name="name" defaultValue={editingCategory?.name} required />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_category_slug" className="text-sm font-medium">Slug</Label>
+              <Input id="edit_category_slug" name="slug" defaultValue={editingCategory?.slug} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit_category_description" className="text-sm font-medium">Açıklama</Label>
+              <Textarea id="edit_category_description" name="description" defaultValue={editingCategory?.description} />
+            </div>
+            <div className="flex justify-end">
+              <Button type="button" variant="outline" onClick={() => setEditingCategory(null)}>İptal</Button>
+              <Button type="submit" className="ml-2">Güncelle</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Category Confirmation Dialog */}
+      <AlertDialog open={!!deleteCategoryId} onOpenChange={() => setDeleteCategoryId(null)}>
+        <AlertDialogContent className="sm:max-w-[425px]">
+          <div className="flex flex-col space-y-4">
+            <div className="flex items-center space-x-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+              </div>
+              <div className="space-y-1">
+                <AlertDialogTitle className="text-lg font-semibold">Kategori Silme Onayı</AlertDialogTitle>
+                <AlertDialogDescription className="text-sm text-muted-foreground">
+                  Bu işlem geri alınamaz. Kategoriye bağlı tüm menüler de kalıcı olarak silinebilir.
+                </AlertDialogDescription>
+              </div>
+            </div>
+            <div className="flex justify-end space-x-2 pt-4">
+              <AlertDialogCancel className="px-4 py-2">İptal</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmDeleteCategory}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 px-4 py-2"
               >
                 <Trash2 className="w-4 h-4 mr-2" />

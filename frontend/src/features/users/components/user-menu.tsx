@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -25,6 +25,7 @@ interface UserProps {
   name: string;
   email?: string;
   image?: string | null;
+  image_url?: string | null;
   role: "customer" | "user" | "admin" | "super_admin";
 }
 
@@ -37,33 +38,26 @@ const UserMenu = ({ user }: UserMenuProps) => {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const { clearCompanies } = useCompanyStore();
 
-  // Kullanıcı adının baş harflerini al
-  const getInitials = (name: string) => {
-    return name
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-  };
+  // Memoized initial characters and role label for performance
+  const initials = useMemo(() => {
+    const raw = user?.name || user?.email || "";
+    const parts = raw.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "U";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + (parts[1][0] ?? "")).toUpperCase();
+  }, [user]);
 
-  // Rolü Türkçe'ye çevir
-  const getRoleLabel = (role: string) => {
-    switch (role) {
-      case "customer":
-        return "Müşteri";
-      case "user":
-        return "Kullanıcı";
-      case "admin":
-        return "Yönetici";
-      case "super_admin":
-        return "Süper Yönetici";
-      default:
-        return "Kullanıcı";
-    }
-  };
+  const roleLabel = useMemo(() => {
+    const map: Record<string, string> = {
+      customer: "Müşteri",
+      user: "Kullanıcı",
+      admin: "Yönetici",
+      super_admin: "Süper Yönetici",
+    };
+    return map[user?.role ?? ""] ?? "Kullanıcı";
+  }, [user?.role]);
 
-  const handleLogout = React.useCallback(async () => {
+  const handleLogout = useCallback(async () => {
     try {
       setIsLoggingOut(true);
       const res = await logoutAction();
@@ -80,7 +74,7 @@ const UserMenu = ({ user }: UserMenuProps) => {
       toast.error('Çıkış sırasında bir hata oluştu');
       setIsLoggingOut(false);
     }
-  }, [router]);
+  }, [router, clearCompanies]);
 
   if (!user) {
     return (
@@ -94,20 +88,21 @@ const UserMenu = ({ user }: UserMenuProps) => {
       </div>
     );
   }
-
+  
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" className="relative h-8 w-8 rounded-full">
           <Avatar className="h-8 w-8">
-            <AvatarImage src={user.image || ""} alt={user.name} />
+            {/* Prefer `image`, fall back to `image_url`. Avoid passing empty string as src. */}
+            <AvatarImage src={user.image ?? user.image_url ?? undefined} alt={user.name} />
             <AvatarFallback className="bg-primary text-primary-foreground">
-              {getInitials(user.name)}
+              {initials}
             </AvatarFallback>
           </Avatar>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-56" align="end" forceMount>
+      <DropdownMenuContent className="w-72" align="end" forceMount>
         <DropdownMenuLabel className="font-normal">
           <div className="flex flex-col space-y-1">
             <p className="text-sm font-medium leading-none">{user.name}</p>
@@ -115,11 +110,21 @@ const UserMenu = ({ user }: UserMenuProps) => {
               {user.email}
             </p>
             <p className="text-xs leading-none text-muted-foreground">
-              {getRoleLabel(user.role)}
+              {roleLabel}
             </p>
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {(user.role === "admin" || user.role === "super_admin") && (
+          <DropdownMenuItem asChild>
+            <Link href="/dashboard" className="flex items-center">
+              <Settings className="mr-2 h-4 w-4" />
+              <span>Yönetim Paneli</span>
+            </Link>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        {/* Menu link items */}
         <DropdownMenuItem asChild>
           <Link href="/profile" className="flex items-center">
             <User className="mr-2 h-4 w-4" />
@@ -132,14 +137,7 @@ const UserMenu = ({ user }: UserMenuProps) => {
             <span>Siparişlerim</span>
           </Link>
         </DropdownMenuItem>
-        {(user.role === "admin" || user.role === "super_admin") && (
-          <DropdownMenuItem asChild>
-            <Link href="/dashboard" className="flex items-center">
-              <Settings className="mr-2 h-4 w-4" />
-              <span>Yönetim Paneli</span>
-            </Link>
-          </DropdownMenuItem>
-        )}
+        
         <DropdownMenuItem asChild>
           <Link href="/settings" className="flex items-center">
             <Settings className="mr-2 h-4 w-4" />
