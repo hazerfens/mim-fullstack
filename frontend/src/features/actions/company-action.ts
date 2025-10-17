@@ -51,9 +51,6 @@ export interface CreateCompanyData {
 }
 
 // Minimal Company type used by frontend
-
-      // Revalidation will be performed below after successful delete.
-
 export interface Company {
   id: string;
   name?: string | null;
@@ -61,6 +58,28 @@ export interface Company {
   unvani?: string | null;
   slug?: string | null;
   is_active?: boolean;
+  email?: string | null;
+  phone?: string | null;
+  cellphone?: string | null;
+  url?: string | null;
+  vd?: string | null;
+  vn?: string | null;
+  mersis?: string | null;
+  oda?: string | null;
+  odano?: string | null;
+  logo?: string | null;
+  address?: {
+    street?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postal_code?: string | null;
+  } | null;
+  coordinates?: {
+    lat?: number | null;
+    lng?: number | null;
+  } | null;
+  [key: string]: unknown;
 }
 
 /**
@@ -306,6 +325,15 @@ export async function updateCompanyAction(companyId: string, data: Partial<Creat
     if (!response.ok) {
       const err = await response.json().catch(() => ({ error: 'Unknown error' }));
       return { status: 'error' as const, message: err.error || 'Şirket güncellenemedi', statusCode: response.status };
+    }
+
+    // Revalidate all affected paths to refresh cached data
+    try {
+      revalidatePath('/', 'layout');
+      revalidatePath('/dashboard', 'layout');
+      revalidatePath('/dashboard/company/settings', 'page');
+    } catch (e) {
+      /* ignore revalidate errors */
     }
 
     return { status: 'success' as const, message: 'Şirket güncellendi' };

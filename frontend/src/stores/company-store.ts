@@ -63,6 +63,7 @@ interface CompanyState {
   clearCompanies: () => void;
   setInitialized: (v: boolean) => void;
   hydrateCompanies: (companies: Company[], active?: Company | null) => void;
+  updateActiveCompany: (updates: Partial<Company>) => void;
 }
 let lastFetchActiveAttempt = 0;
 let lastFetchCompaniesAttempt = 0;
@@ -220,6 +221,30 @@ export const useCompanyStore = create<CompanyState>()(
         });
       },
       setInitialized: (v: boolean) => set({ initialized: v }),
+      updateActiveCompany: (updates: Partial<Company>) => {
+        const current = get().activeCompany;
+        if (!current) {
+          console.warn('[company-store] No active company to update');
+          return;
+        }
+        const updated = { ...current, ...updates };
+        console.log('[company-store] Updating active company from:', current);
+        console.log('[company-store] Updating active company to:', updated);
+        set({ activeCompany: updated });
+        
+        // Also update in companies list if present
+        const companies = get().companies;
+        const index = companies.findIndex((c) => c.id === current.id);
+        if (index >= 0) {
+          const newCompanies = [...companies];
+          newCompanies[index] = updated;
+          set({ companies: newCompanies });
+          console.log('[company-store] Also updated in companies array at index:', index);
+        }
+        
+        // Zustand persist middleware will automatically save activeCompany to localStorage
+        console.log('[company-store] Persist middleware will auto-save');
+      },
     }),
     {
       name: "company-storage",

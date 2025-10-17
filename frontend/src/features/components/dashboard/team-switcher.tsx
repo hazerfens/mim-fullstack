@@ -35,14 +35,12 @@ import { CreateCompanyForm } from "./settings/company/CreateCompanyForm"
 export function TeamSwitcher() {
   const { isMobile } = useSidebar()
   const router = useRouter()
-  const {
-    companies,
-    activeCompany,
-    fetchCompanies,
-    fetchActiveCompany,
-    switchCompany,
-    isLoading,
-  } = useCompanyStore()
+  const companies = useCompanyStore((state) => state.companies)
+  const activeCompany = useCompanyStore((state) => state.activeCompany)
+  const fetchCompanies = useCompanyStore((state) => state.fetchCompanies)
+  const fetchActiveCompany = useCompanyStore((state) => state.fetchActiveCompany)
+  const switchCompany = useCompanyStore((state) => state.switchCompany)
+  const isLoading = useCompanyStore((state) => state.isLoading)
 
   const user = useUser()
   
@@ -58,7 +56,8 @@ export function TeamSwitcher() {
     if (!(useCompanyStore.getState().initialized)) {
       fetchActiveCompany()
     }
-  }, [fetchCompanies, fetchActiveCompany, companies.length])
+    console.log('[team-switcher] Mounted/Updated with activeCompany:', activeCompany);
+  }, [fetchCompanies, fetchActiveCompany, companies.length, activeCompany])
 
   const handleSwitchCompany = async (companyId: string) => {
     if (switching) return
