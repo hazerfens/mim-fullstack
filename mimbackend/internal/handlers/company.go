@@ -426,6 +426,9 @@ func UpdateCompanyHandler(c *gin.Context) {
 		return
 	}
 
+	// Debug: Log the incoming update request
+	log.Printf("UpdateCompanyHandler: Updating company %s with request: %+v\n", companyID.String(), req)
+
 	updates := make(map[string]interface{})
 
 	if req.Unvani != nil && *req.Unvani != "" {
@@ -831,4 +834,50 @@ func IsModuleActiveHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"active": active})
+}
+
+// VerifyCompanyTaxHandler - TC/VKN ile SOVOS'tan firmanın e-fatura durumunu doğrula
+// @Summary Verify company E-Fatura status
+// @Description Verifies company E-Fatura status from SOVOS using TC or VKN
+// @Tags Company
+// @Accept json
+// @Produce json
+// @Param request body object{vkn_tc=string,identifier=string,role=string} true "Verification data"
+// @Success 200 {object} basemodels.SovosVerificationResult
+// @Failure 400 {object} object{error=string}
+// @Failure 500 {object} object{error=string}
+// @Router /api/v1/company/verify-tax [post]
+func VerifyCompanyTaxHandler(c *gin.Context) {
+	var req struct {
+		VknTc      string `json:"vkn_tc" binding:"required"`
+		Identifier string `json:"identifier"`
+		Role       string `json:"role" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "VKN/TC, identifier, and role are required"})
+		return
+	}
+
+	// SOVOS service'ini oluştur
+	sovosService, err := services.NewSovosService()
+	if err != nil {
+		log.Printf("SOVOS service initialization error: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "SOVOS service not available"})
+		return
+	}
+
+	// SOVOS'tan doğrula
+	result, err := sovosService.VerifyTaxInfo(req.VknTc, req.Role)
+	if err != nil {
+		log.Printf("Verification error: %v\n", err)
+		// Hata olsa da result döndür
+		c.JSON(http.StatusOK, gin.H{
+			"verified": false,
+			"error":    err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }

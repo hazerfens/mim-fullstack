@@ -428,11 +428,19 @@ func UpdateCompany(id uuid.UUID, updates map[string]interface{}) error {
 		return err
 	}
 
+	// Debug: Log the update being attempted
+	log.Printf("UpdateCompany: Attempting to update company %s with updates: %+v\n", id.String(), updates)
+
 	// JSON fields are already converted to proper structs in the handler
 	// GORM will call their Value() methods for JSON serialization
-	if err := db.Model(&companymodels.Company{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-		return err
+	result := db.Model(&companymodels.Company{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
 	}
+
+	// Debug: Log the number of rows affected
+	log.Printf("UpdateCompany: Updated %d rows for company %s\n", result.RowsAffected, id.String())
+
 	return nil
 }
 

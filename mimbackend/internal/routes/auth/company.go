@@ -13,6 +13,9 @@ func SetupCompanyRoutes(router gin.IRouter) {
 	router.POST("/company/:id/export/background", handlers.RequestExportBackgroundHandler)
 	router.GET("/company/export/download", handlers.DownloadExportHandler)
 
+	// E-Fatura verification endpoint (no auth required for now)
+	router.POST("/company/verify-tax", handlers.VerifyCompanyTaxHandler)
+
 	company := router.Group("/company")
 	company.Use(middleware.JWTMiddleware())
 	{

@@ -76,6 +76,12 @@ type Company struct {
 	WorkingHours  *WorkingHours `gorm:"column:workinghours;type:json" json:"workinghours,omitempty"`
 	Publish       bool          `gorm:"column:publish;default:true" json:"publish"`
 
+	// E-Fatura Verification Fields
+	IsEfatura      *bool   `gorm:"column:is_efattura;default:false" json:"is_efattura,omitempty"`
+	SovosVerified  *bool   `gorm:"column:sovos_verified;default:false" json:"sovos_verified,omitempty"`
+	SovosUnvan     *string `gorm:"column:sovos_unvan;type:varchar(255)" json:"sovos_unvan,omitempty"`
+	VerificationTc *string `gorm:"column:verification_tc;type:varchar(50)" json:"verification_tc,omitempty"` // TC or VKN used for verification
+
 	// Company Modules - SaaS için aktif modeller
 	Modules *CompanyModules `gorm:"column:modules;type:json" json:"modules,omitempty"`
 
